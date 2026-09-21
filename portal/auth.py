@@ -7,6 +7,12 @@ door-staff links, separated by role.
 
 A token is  role.subject.expiry.signature  — no server-side session, so a
 restart never logs anybody out and there is nothing to leak from a store.
+
+Two broker shapes, because the directory is not loaded yet:
+
+  desk    one link shared by every broker, who types their own code
+  broker  a personal link that already knows the code, for once the
+          client list exists and the form can fill itself in
 """
 import base64
 import hashlib
@@ -15,7 +21,7 @@ import os
 import time
 
 SECRET = os.environ.get("BROKER_LINK_SECRET", "")
-ROLES = ("broker", "admin", "door")
+ROLES = ("desk", "broker", "admin", "door")
 
 
 def _b64(raw: bytes) -> str:

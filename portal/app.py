@@ -84,7 +84,8 @@ def qr_url_for(secret):
 @app.get("/")
 def root(request: Request):
     who = _identity(request)
-    page = {"broker": "/r", "admin": "/admin", "door": "/door"}[who["role"]]
+    page = {"desk": "/r", "broker": "/r", "admin": "/admin",
+            "door": "/door"}[who["role"]]
     t = request.query_params.get("t", "")
     return RedirectResponse(f"{page}?t={t}" if t else page)
 
@@ -106,12 +107,19 @@ app.mount("/assets", StaticFiles(directory=STATIC / "assets"), name="assets")
 def session(request: Request, authorization: str = Header(None)):
     who = _identity(request, authorization)
     out = dict(who)
-    if who["role"] == "broker":
+    if who["role"] == "desk":
+        # The desk link belongs to no one broker, so the form asks who is using it.
+        out["display_name"] = "Registration desk"
+        out["ask_broker_code"] = True
+        out["directory"] = db.available()
+    elif who["role"] == "broker":
         b = db.broker(who["subject"])
         out["display_name"] = (b or {}).get("name") or who["subject"]
+        out["ask_broker_code"] = False
         out["directory"] = db.available()
     else:
         out["display_name"] = who["subject"]
+        out["ask_broker_code"] = False
     out["channels"] = {"whatsapp": wati.configured(), "email": mailer.configured()}
     return out
 
@@ -132,9 +140,18 @@ def events(request: Request, authorization: str = Header(None)):
 
 @app.get("/api/clients")
 def clients(request: Request, q: str = Query("", max_length=80),
+            broker: str = Query("", max_length=32),
             authorization: str = Header(None)):
-    who = _need(_identity(request, authorization), "broker")
-    return db.search_clients(who["subject"], q)
+    """Suggestions are always scoped to one broker's own book.
+
+    A personal link carries the code; the shared desk link passes the code the
+    broker typed. Either way a broker never sees another broker's clients.
+    """
+    who = _need(_identity(request, authorization), "desk", "broker")
+    code = who["subject"] if who["role"] == "broker" else broker.strip().upper()
+    if not code:
+        return []
+    return db.search_clients(code, q)
 
 
 class Registration(BaseModel):
@@ -142,12 +159,23 @@ class Registration(BaseModel):
     name: str
     phone: str = ""
     email: str = ""
+    broker_code: str = ""
 
 
 @app.post("/api/register")
 def register(body: Registration, request: Request, authorization: str = Header(None)):
-    who = _need(_identity(request, authorization), "broker", "admin")
-    broker_code = who["subject"]
+    who = _need(_identity(request, authorization), "desk", "broker", "admin")
+
+    # A personal link already knows whose registration this is. The shared desk
+    # link does not, so the broker states it and it is recorded as given.
+    if who["role"] == "broker":
+        broker_code = who["subject"]
+    else:
+        broker_code = (body.broker_code or "").strip().upper()
+        if not broker_code:
+            raise HTTPException(400, "Enter your broker code")
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9/_-]{1,15}", broker_code):
+            raise HTTPException(400, "That broker code does not look right")
 
     name = " ".join((body.name or "").split())
     if len(name) < 2:
@@ -186,11 +214,12 @@ def register(body: Registration, request: Request, authorization: str = Header(N
             reference=order["code"], qr_url=qr)
         delivery["email"] = {"ok": ok, "detail": detail}
 
-    if who["role"] == "broker":
+    if who["role"] in ("desk", "broker"):
         db.remember_client(broker_code, name, phone, email)
 
     return {"reference": order["code"], "name": name, "event": ev["name"],
-            "when": when_text(ev["date_from"]), "delivery": delivery}
+            "when": when_text(ev["date_from"]), "broker_code": broker_code,
+            "phone": phone or "", "email": email or "", "delivery": delivery}
 
 
 @app.get("/api/stats")
