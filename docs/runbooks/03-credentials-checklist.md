@@ -70,41 +70,48 @@ reclassifies them as marketing, which multiplies the cost per event.
 
 ---
 
-## Part 2 — Email (SMTP for pretix)
+## Part 2 — Email (ZeptoMail SMTP for pretix)
 
-In this design pretix emails **administrators only**. Clients receive WhatsApp. So the
-volume is a handful of messages a day and a transactional provider is unnecessary.
+JSL already runs ZeptoMail, Zoho's transactional email service, so pretix uses that rather
+than a new provider. In this design pretix emails **administrators only**; clients receive
+WhatsApp. Volume is a handful of messages a day.
 
-| Value | Example | Secret? |
+| Value | Setting | Secret? |
 |---|---|---|
-| Host | `smtp.gmail.com` | No |
-| Port | `587` | No |
-| Encryption | STARTTLS on, SSL off | No |
-| Username | `events@jslwealth.in` | No |
-| Password | 16-character app password | **SECRET** |
-| From address | `events@jslwealth.in` | No |
+| Host | `smtp.zeptomail.com` | No |
+| Port | `587` with TLS, or `465` with SSL | No |
+| Username | the literal string `emailapikey` | No |
+| Password | the send-mail token from the ZeptoMail console | **SECRET** |
+| From address | e.g. `events@jslwealth.in`, must be a verified sender | No |
 
-### How to get it, Google Workspace
+Source: https://www.zoho.com/zeptomail/help/smtp-home.html
 
-1. Create or choose a dedicated mailbox, for example `events@jslwealth.in`. Do not use a
-   personal account; when that person leaves, the system breaks.
-2. Turn on two-step verification for that mailbox. Google will not issue an app password
-   without it.
-3. Go to `myaccount.google.com/apppasswords`, create one named "event portal", and copy
-   the 16 characters.
-4. The app password is scoped to mail only and revocable in one click, which makes it far
-   lower risk than a cloud key.
+### The trap to avoid
 
-Limits are roughly 2,000 messages per day on Workspace, which is far above what admin
-mail needs.
+With most providers the SMTP username and the From address are the same string. With
+ZeptoMail they are not: the username is always `emailapikey` and the From address is a
+separate verified sender. Conflating them makes pretix authenticate fine and then send as
+the wrong sender, or fail silently. `scripts/deploy-jprod.sh` prompts for the two
+separately for this reason.
 
-### If you would rather not use Workspace
+### Region note, worth checking before you deploy
 
-Amazon SES or Brevo both work and give better deliverability, but both need SPF and DKIM
-records added to `jslwealth.in` DNS. That is more setup than admin mail justifies. Revisit
-only if pretix ever emails clients directly.
+Zoho runs regional data centres and JSL is likely on the India one. Zoho's public SMTP
+page documents only `smtp.zeptomail.com`; I could not confirm a separate India host from
+official documentation. **Check the ZeptoMail console under Setup Info, SMTP** and use
+whatever host it shows there. If it differs, pass it to the deploy script when prompted.
 
----
+### What to collect
+
+1. The send-mail token. ZeptoMail console, Mail Agents, pick the agent, SMTP and API, then
+   copy or generate a send-mail token. Treat it as a password.
+2. Confirmation that the From address you want is a verified sender on the agent. If
+   `events@jslwealth.in` is not set up yet, add and verify it first, or mail will be
+   rejected at send time rather than at configuration time.
+3. The exact host string from Setup Info.
+
+Nothing here needs DNS work if the domain is already verified in ZeptoMail for the other
+Jhaveri systems, which is the likely case.
 
 ## Part 3 — Where each value goes
 

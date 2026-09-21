@@ -35,10 +35,13 @@ if [ ! -f "$DEPLOY/.env" ]; then
   ask PRETIX_DOMAIN "Domain for the events site" "events.jslwealth.in"
   ask N8N_DOMAIN    "Domain for the automation site" "flow.jslwealth.in"
   ask ACME_EMAIL    "Email for TLS certificate notices"
-  ask SMTP_HOST     "SMTP host" "smtp.gmail.com"
+  # ZeptoMail's username is the literal string "emailapikey", which is NOT the
+  # From address. Keep the two separate or pretix sends as the wrong sender.
+  ask SMTP_HOST     "SMTP host" "smtp.zeptomail.com"
   ask SMTP_PORT     "SMTP port" "587"
-  ask SMTP_USER     "SMTP username (also the From address)"
-  ask SMTP_PASSWORD "SMTP password / app password"
+  ask SMTP_USER     "SMTP username" "emailapikey"
+  ask SMTP_PASSWORD "SMTP password (ZeptoMail send-mail token)"
+  ask SMTP_FROM     "From address (must be a verified sender in ZeptoMail)" "events@jslwealth.in"
 
   gen() { openssl rand -hex "${1:-16}"; }
   PRETIX_DB_PASSWORD=$(gen 16)
@@ -61,7 +64,7 @@ EOF
 
   sed -e "s|^url=.*|url=https://$PRETIX_DOMAIN|" \
       -e "s|^password=CHANGEME|password=$PRETIX_DB_PASSWORD|" \
-      -e "s|^from=.*|from=$SMTP_USER|" \
+      -e "s|^from=.*|from=$SMTP_FROM|" \
       -e "s|^host=smtp.example.com|host=$SMTP_HOST|" \
       -e "s|^port=587|port=$SMTP_PORT|" \
       -e "s|^user=$|user=$SMTP_USER|" \
