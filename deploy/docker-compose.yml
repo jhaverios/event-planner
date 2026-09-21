@@ -30,8 +30,10 @@ services:
       - ./postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
     # Loopback only, never the public interface. Needed so the directory CSV
     # importer and ad-hoc reporting can reach the cluster from the host.
+    # 5433 is deliberately avoided: jprod already publishes another postgres
+    # there (niyam-db-1), and on 0.0.0.0 rather than loopback.
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres}"]
       interval: 10s

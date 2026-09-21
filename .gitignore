@@ -23,3 +23,7 @@ backups/
 *.swp
 deploy/n8n/certs/*.crt
 deploy/n8n/certs/*.pem
+
+# The portal trusts an optional local proxy CA; never commit one
+portal/certs/*.crt
+portal/certs/*.pem

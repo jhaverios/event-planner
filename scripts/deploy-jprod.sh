@@ -32,8 +32,12 @@ echo "docker $(docker --version | awk '{print $3}' | tr -d ,), compose $(docker 
 # --- Configuration -------------------------------------------------------
 if [ ! -f "$DEPLOY/.env" ]; then
   say "First run: collecting configuration"
-  ask PRETIX_DOMAIN "Domain for the events site" "events.jslwealth.in"
-  ask N8N_DOMAIN    "Domain for the automation site" "flow.jslwealth.in"
+  # Two names because the portal and pretix both answer on /api and cannot
+  # share a hostname. n8n gets no name at all: it holds every API credential
+  # and only an administrator ever needs it, so it stays on loopback behind
+  # an SSH tunnel.
+  ask PORTAL_DOMAIN "Domain brokers and door staff open" "events.jslwealth.in"
+  ask PRETIX_DOMAIN "Domain for pretix and pretixSCAN" "tickets.jslwealth.in"
   ask ACME_EMAIL    "Email for TLS certificate notices"
   # ZeptoMail's username is the literal string "emailapikey", which is NOT the
   # From address. Keep the two separate or pretix sends as the wrong sender.
@@ -47,7 +51,9 @@ if [ ! -f "$DEPLOY/.env" ]; then
   PRETIX_DB_PASSWORD=$(gen 16)
   cat > "$DEPLOY/.env" <<EOF
 PRETIX_DOMAIN=$PRETIX_DOMAIN
-N8N_DOMAIN=$N8N_DOMAIN
+PORTAL_DOMAIN=$PORTAL_DOMAIN
+PORTAL_BASE=https://$PORTAL_DOMAIN
+N8N_DOMAIN=${N8N_DOMAIN:-flow.invalid}
 ACME_EMAIL=$ACME_EMAIL
 POSTGRES_SUPERUSER=postgres
 POSTGRES_SUPERUSER_PASSWORD=$(gen 16)
@@ -59,6 +65,13 @@ N8N_EXECUTION_RETENTION_HOURS=720
 N8N_SAVE_ON_SUCCESS=all
 TZ=Asia/Kolkata
 PRETIX_CRON_INTERVAL=900
+BROKER_LINK_SECRET=$(gen 32)
+DIRECTORY_DB_PASSWORD=$(gen 24)
+# 5433 is already taken on this host by another stack's postgres.
+POSTGRES_PORT=5434
+PORTAL_PORT=8090
+WATI_TEMPLATE=jsl_event_v3
+QR_BASE=https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data=
 EOF
   chmod 600 "$DEPLOY/.env"
 
@@ -84,6 +97,33 @@ EOF
 else
   say "Existing configuration found; leaving .env and pretix.cfg untouched"
 fi
+
+# --- Keys that cannot exist on a first run -------------------------------
+# The pretix API token is created inside pretix, which does not exist yet the
+# first time this runs. So rather than demanding everything up front, top up
+# whatever is still missing on each run. Re-running after setting pretix up is
+# the intended path, not a workaround.
+top_up() { # top_up KEY "prompt" [optional]
+  local k=$1 prompt=$2 optional=${3:-}
+  if grep -qE "^$k=.+" "$DEPLOY/.env"; then return; fi
+  local val="${!k:-}"
+  if [ -z "$val" ] && [ -t 0 ]; then
+    read -r -p "$prompt${optional:+ (blank to skip)}: " val || true
+  fi
+  if [ -z "$val" ]; then
+    [ -n "$optional" ] && { warn "$k left unset; the portal will report it as missing"; return; }
+    die "$k is required"
+  fi
+  sed -i "/^$k=/d" "$DEPLOY/.env"
+  printf '%s=%s\n' "$k" "$val" >> "$DEPLOY/.env"
+  echo "recorded $k"
+}
+say "Checking the portal's configuration"
+top_up PRETIX_API_TOKEN "pretix API token (create it in pretix: Team settings then API tokens)" optional
+top_up WATI_API_BASE    "WATI API base, e.g. https://live-mt-server.wati.io/111557" optional
+top_up WATI_TOKEN       "WATI API token" optional
+top_up ZEPTO_SMTP_PASS  "ZeptoMail send-mail token" optional
+top_up MAIL_FROM        "From address for the pass emails" optional
 # shellcheck disable=SC1091
 set -a; . "$DEPLOY/.env"; set +a
 
@@ -122,6 +162,41 @@ say "Starting the stack"
 cd "$DEPLOY"
 docker compose "${FILES[@]}" "${PROFILE[@]}" up -d
 
+say "Broker and client directory"
+# Idempotent: creating the database, the role and the schema can all be re-run.
+for i in $(seq 1 30); do
+  docker compose "${FILES[@]}" exec -T postgres pg_isready -U "$POSTGRES_SUPERUSER" >/dev/null 2>&1 && break
+  [ "$i" = 30 ] && die "postgres did not become ready"
+  sleep 2
+done
+if ! docker compose "${FILES[@]}" exec -T postgres \
+     psql -U "$POSTGRES_SUPERUSER" -tAc "SELECT 1 FROM pg_database WHERE datname='directory'" | grep -q 1; then
+  docker compose "${FILES[@]}" exec -T postgres createdb -U "$POSTGRES_SUPERUSER" directory
+  echo "created the directory database"
+fi
+docker compose "${FILES[@]}" exec -T postgres \
+  psql -U "$POSTGRES_SUPERUSER" -v ON_ERROR_STOP=1 -q <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='directory') THEN
+    CREATE ROLE directory LOGIN PASSWORD '$DIRECTORY_DB_PASSWORD';
+  ELSE
+    ALTER ROLE directory PASSWORD '$DIRECTORY_DB_PASSWORD';
+  END IF;
+END \$\$;
+GRANT CONNECT ON DATABASE directory TO directory;
+SQL
+docker compose "${FILES[@]}" exec -T postgres \
+  psql -U "$POSTGRES_SUPERUSER" -d directory -v ON_ERROR_STOP=1 -q < postgres/directory-schema.sql
+docker compose "${FILES[@]}" exec -T postgres \
+  psql -U "$POSTGRES_SUPERUSER" -d directory -v ON_ERROR_STOP=1 -q <<'SQL'
+GRANT USAGE ON SCHEMA public TO directory;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO directory;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO directory;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO directory;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO directory;
+SQL
+echo "directory schema applied"
+
 say "Waiting for pretix"
 for i in $(seq 1 60); do
   code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $PRETIX_DOMAIN" http://127.0.0.1:8345/control/login || true)
@@ -132,10 +207,28 @@ for i in $(seq 1 60); do
   sleep 5
 done
 
+say "Waiting for the portal"
+for i in $(seq 1 30); do
+  body=$(curl -s --max-time 5 "http://127.0.0.1:${PORTAL_PORT:-8090}/healthz" || true)
+  if [ -n "$body" ]; then echo "$body"; break; fi
+  [ "$i" = 30 ] && { docker compose "${FILES[@]}" logs --tail=40 portal; die "the portal did not come up"; }
+  sleep 3
+done
+
 say "Done"
+# An .env written before the portal existed has no PORTAL_DOMAIN. Report what
+# we do know rather than failing on the last line of a successful deploy.
+PORTAL_DOMAIN=${PORTAL_DOMAIN:-"(not set - add PORTAL_DOMAIN to deploy/.env)"}
 cat <<EOF
-Events site       https://$PRETIX_DOMAIN/control/
-Automation site   https://$N8N_DOMAIN/
+Portal            https://$PORTAL_DOMAIN/
+Pretix control    https://$PRETIX_DOMAIN/control/
+n8n               loopback only, reach it with:
+                    ssh -N -L 5678:127.0.0.1:5678 $(id -un)@$(hostname)
+
+Mint the links people actually use:
+  cd $(pwd)/.. && python3 portal/issue-link.py desk  shared     --days 365
+                  python3 portal/issue-link.py admin nimish     --days 90
+                  python3 portal/issue-link.py door  entrance-1 --days 7
 
 Create the first admin user (interactive, asks for email and password):
   cd $(pwd) && docker compose ${FILES[*]} exec pretix pretix createsuperuser
