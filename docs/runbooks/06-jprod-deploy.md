@@ -55,7 +55,7 @@ cd event-planner
 
 export PORTAL_DOMAIN=events.jslwealth.in
 export PRETIX_DOMAIN=tickets.jslwealth.in
-export ACME_EMAIL=nimish.shah1989@gmail.com
+export ACME_EMAIL=            # an address you want expiry warnings at
 export SMTP_HOST=smtp.zeptomail.in
 export SMTP_PORT=587
 export SMTP_USER=emailapikey
