@@ -267,3 +267,42 @@ WATI fills in `subCategory: STANDARD`, `buttonsType: none` and `type: hsm` by it
 `jsl_event_pass` should be deleted once v2 is approved, so nobody reaches for it later. That is a
 deliberate decision to leave to a person, since deleting an approved template is not reversible
 without another Meta review.
+
+## Getting the QR into the chat, properly
+
+The v1 header failed because the link was a fixed URL. Testing three draft variants through the API,
+at no cost since drafts never reach Meta, showed WATI **stores a variable inside a header link
+verbatim**. So the header can be dynamic after all; v1 simply had no variable in it.
+
+`jsl_event_pass_v3` therefore puts the variable inside the URL rather than making the whole URL a
+variable:
+
+```
+header.link = https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data={{6}}
+body        = {{1}}..{{5}}
+buttons     = none
+```
+
+At send time `{{6}}` is the ticket secret, so every recipient gets their own QR rendered in the chat.
+
+**Why the QR service rather than our own endpoint.** Pointing the header at
+`events.jslwealth.in` would be better hosting, but that domain does not resolve yet, and Meta fetches
+the sample during review, so it would likely be rejected. The QR service resolves today, which
+removes the deployment from the critical path for this one piece. It is touched only at send time,
+never when a QR is scanned at the door, so an outage delays a message rather than stopping anyone
+getting in. Move the header to our own endpoint in a later template once the domain is live.
+
+**The failure mode is loud, which is why this is safe to try.** If `{{6}}` is not substituted, the
+link keeps its braces, the fetch fails and the send fails visibly, exactly as the button did. It
+cannot quietly deliver the wrong person's QR.
+
+### Two drafts, submit both
+
+| Draft | Shape | Depends on |
+|---|---|---|
+| `jsl_event_pass_v3` | QR image in the chat, five body variables, no buttons | the QR service at send time |
+| `jsl_event_pass_v2` | No image; the pass URL is body variable six | jprod and DNS being live |
+
+Submitting both costs nothing and gives two independent routes. v3 is the one to use if it works,
+because a QR already on screen beats a link at a venue door. v2 is the fallback that needs no image
+substitution at all.
