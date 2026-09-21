@@ -15,7 +15,9 @@ name: jsl-events
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # n8n reports Postgres 16 as "outside the supported range" and pretix needs
+    # 14 or newer, so 17 is the version that satisfies both.
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
@@ -103,6 +105,10 @@ services:
 
       N8N_HOST: ${N8N_DOMAIN:?set N8N_DOMAIN in .env}
       N8N_PORT: 5678
+      # n8n listens on :: by default and exits with "address '::' is not
+      # available" on a host without IPv6. The reverse proxy reaches it over
+      # IPv4 on the compose network either way.
+      N8N_LISTEN_ADDRESS: 0.0.0.0
       N8N_PROTOCOL: https
       WEBHOOK_URL: https://${N8N_DOMAIN}/
       N8N_EDITOR_BASE_URL: https://${N8N_DOMAIN}/

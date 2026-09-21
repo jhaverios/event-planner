@@ -1,0 +1,19 @@
+# Used only when nothing else owns 80/443. Caddy obtains and renews
+# certificates automatically. Copy to Caddyfile; the domains come from .env.
+{
+    email {$ACME_EMAIL}
+}
+
+{$PRETIX_DOMAIN} {
+    reverse_proxy pretix:80
+    request_body {
+        max_size 25MB
+    }
+}
+
+{$N8N_DOMAIN} {
+    reverse_proxy n8n:5678
+    request_body {
+        max_size 25MB
+    }
+}
