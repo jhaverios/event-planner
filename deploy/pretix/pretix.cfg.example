@@ -26,14 +26,16 @@ backend=redis://redis:6379/1
 broker=redis://redis:6379/2
 
 [mail]
-; ZeptoMail: host smtp.zeptomail.com, port 587 with tls (or 465 with ssl).
-; The username is the literal string "emailapikey", not an address. The
-; password is the send-mail token from the ZeptoMail console. "from" must be a
-; sender ZeptoMail has verified for the domain.
-; If JSL is on Zoho's India data centre, check the console's Setup Info for a
-; region-specific host before using the default below.
-from=events@example.com
-host=smtp.zeptomail.com
+; ZeptoMail. JSL is on Zoho's INDIA data centre, proven rather than assumed:
+; the same token returns a validation error on api.zeptomail.in and
+; 401 "Invalid API Token" on api.zeptomail.com. Using the global host fails in a
+; way that looks like a bad password rather than a wrong region.
+;
+; Username is the literal string "emailapikey", not an address. The password is
+; the send-mail token from the agent's SMTP page. "from" must be on a domain
+; ZeptoMail has verified.
+from=events@jslwealth.in
+host=smtp.zeptomail.in
 user=emailapikey
 password=
 port=587

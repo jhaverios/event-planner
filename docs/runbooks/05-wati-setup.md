@@ -85,3 +85,25 @@ It already appears in the broker registration form.
 
 **The date is three days out.** Template review takes up to 24 hours each, and the plan tier
 question is unresolved. That timeline is the real risk on this event, not the software.
+
+## Verified against the live API, not the docs
+
+**Webhooks really are off on Growth.** `GET /api/ext/v3/webhooks` returns **403** with this account's
+token. The pricing page said so; the API agrees. Delivery status therefore comes from polling
+`GET /{tenant}/api/v1/whatsApp/messages/{phone}/{localMessageId}`, and step 5 is a scheduled poller
+rather than a webhook receiver.
+
+**`local_message_id` must be 10 to 64 characters.** The send endpoint accepts a shorter one and
+returns `success: true`, but the status endpoint then refuses to look it up:
+`Local message ID length must be between 10 and 64 characters`. A message sent with a 7-character id
+is unqueryable forever. Generate ids well over the minimum, for example
+`reg-<ordercode>-<touchpoint>-<epoch>`.
+
+**A 200 from the send endpoint means almost nothing.** Sending to `910000000000`, which is not a
+valid Indian mobile, returned `success: true` with an empty `errors` array. WATI accepts the request
+and validates asynchronously. The ledger must record "accepted" on the response and only move to
+sent, delivered or failed from a later status read.
+
+**Still untested: whether an approved template with fixed media accepts a per-recipient image URL.**
+Passing an extra header parameter to `im2025_checkin3` was accepted, but so was everything else, so
+the 200 proves nothing. This needs one real recipient number to settle.

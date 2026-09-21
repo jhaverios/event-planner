@@ -78,7 +78,7 @@ WhatsApp. Volume is a handful of messages a day.
 
 | Value | Setting | Secret? |
 |---|---|---|
-| Host | `smtp.zeptomail.com` | No |
+| Host | `smtp.zeptomail.in` | No |
 | Port | `587` with TLS, or `465` with SSL | No |
 | Username | the literal string `emailapikey` | No |
 | Password | the send-mail token from the ZeptoMail console | **SECRET** |
@@ -139,3 +139,39 @@ written with mode 600 by the deploy script.
 
 Business verification gates everything above 250 recipients per day, so start it first and
 in parallel with the build. Nothing else on this list is on the critical path.
+
+
+## ZeptoMail: settled, with proof
+
+Read from the JSL agent's SMTP page and verified against the API.
+
+| Field | Value |
+|---|---|
+| Host | `smtp.zeptomail.in` |
+| Port | 587 TLS, or 465 SSL |
+| Username | `emailapikey` |
+| Sender domain | `jslwealth.in`, verified |
+| From | `events@jslwealth.in` |
+
+**The region is proven, not assumed.** The same token returns a *validation* error on
+`api.zeptomail.in`, meaning it authenticated, and **401 Invalid API Token** on `api.zeptomail.com`.
+Following Zoho's public docs, which list only the global host, would have produced an error that
+reads like a wrong password rather than a wrong region.
+
+**SMTP could not be tested from the build environment.** Outbound port 587 is blocked there, as is
+22. The credential was proven over HTTPS instead. Sending an actual email has to be checked on jprod,
+and runbook 02 should not be signed off until it has been.
+
+**The trap that cost an hour: file permissions.** pretix runs as uid 15371 inside its container. A
+root-owned `pretix.cfg` at mode 600 is unreadable to it, and pretix does not complain. It silently
+falls back to built-in defaults, so `EMAIL_HOST` quietly becomes `localhost:25` and mail never
+leaves. Confirm after any config change:
+
+```bash
+docker compose exec -T pretix python3 -c \
+  "from django.conf import settings; print(settings.EMAIL_HOST, settings.EMAIL_HOST_USER)"
+```
+
+If that prints `localhost` the file is not being read. Fix with
+`chown 15371 pretix.cfg && chmod 600 pretix.cfg`, then recreate the container, because a changed
+bind-mounted file does not restart it on its own.

@@ -37,7 +37,7 @@ if [ ! -f "$DEPLOY/.env" ]; then
   ask ACME_EMAIL    "Email for TLS certificate notices"
   # ZeptoMail's username is the literal string "emailapikey", which is NOT the
   # From address. Keep the two separate or pretix sends as the wrong sender.
-  ask SMTP_HOST     "SMTP host" "smtp.zeptomail.com"
+  ask SMTP_HOST     "SMTP host" "smtp.zeptomail.in"
   ask SMTP_PORT     "SMTP port" "587"
   ask SMTP_USER     "SMTP username" "emailapikey"
   ask SMTP_PASSWORD "SMTP password (ZeptoMail send-mail token)"
@@ -70,8 +70,17 @@ EOF
       -e "s|^user=$|user=$SMTP_USER|" \
       -e "s|^password=$|password=$SMTP_PASSWORD|" \
       "$DEPLOY/pretix/pretix.cfg.example" > "$DEPLOY/pretix/pretix.cfg"
+  # pretix runs as an unprivileged user inside the container (uid 15371). A
+  # root-owned 0600 config is unreadable to it, and pretix does NOT error: it
+  # silently falls back to built-in defaults, so mail stops working and the
+  # database settings are ignored, with nothing in the log to say why.
+  # Give the file to that uid so it stays secret AND readable.
+  PRETIX_UID=$(docker compose "${FILES[@]:-}" run --rm --no-deps --entrypoint id pretix -u 2>/dev/null | tr -d '\r\n')
+  PRETIX_UID=${PRETIX_UID:-15371}
+  chown "$PRETIX_UID" "$DEPLOY/pretix/pretix.cfg" 2>/dev/null || \
+    warn "could not chown pretix.cfg to uid $PRETIX_UID; pretix may ignore it"
   chmod 600 "$DEPLOY/pretix/pretix.cfg"
-  echo "wrote $DEPLOY/.env and $DEPLOY/pretix/pretix.cfg (both chmod 600, both gitignored)"
+  echo "wrote $DEPLOY/.env (0600 root) and $DEPLOY/pretix/pretix.cfg (0600, uid $PRETIX_UID)"
 else
   say "Existing configuration found; leaving .env and pretix.cfg untouched"
 fi
