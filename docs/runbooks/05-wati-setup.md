@@ -225,3 +225,45 @@ which is not true of v1, where a failed substitution would have shown every clie
 
 A URL in the body also removes the dependency on `events.jslwealth.in` being the exact approved
 domain, since the whole URL is a variable rather than a baked-in prefix.
+
+## Creating templates through the API
+
+`POST /{tenant}/api/v1/whatsApp/templates` works, with two traps.
+
+**It returns HTTP 500 on success.** The template is created correctly; the 500 is noise. Always read
+the template list back rather than trusting the status code. A second call then fails with
+"template with current name already exists", which is the real confirmation that the first worked.
+
+**It only ever creates a DRAFT.** There is no submit or publish endpoint: the documented template
+endpoints are get, create, and delete, plus webhooks that report status changes. Sending a draft to
+Meta for review must be done by a person clicking **Save and submit** in the dashboard.
+
+Deleting is `DELETE /{tenant}/api/v1/whatsApp/templates/{wabaId}/{name}`, which returns `{"ok":true}`.
+The wabaId for this account is on every template in the list response.
+
+A minimal working create payload:
+
+```json
+{
+  "elementName": "jsl_event_pass_v2",
+  "category": "UTILITY",
+  "language": "en",
+  "body": "Hello {{1}}, ... Your entry pass: {{6}}",
+  "footer": "",
+  "buttons": [],
+  "customParams": [{"paramName": "1", "paramValue": "Rahul Mehta"}, ...]
+}
+```
+
+WATI fills in `subCategory: STANDARD`, `buttonsType: none` and `type: hsm` by itself.
+
+## Template inventory after this work
+
+| Name | Status | Verdict |
+|---|---|---|
+| `jsl_event_pass` | APPROVED | **Broken, do not use.** The dynamic URL button shares parameter `1` with the body, so any client whose name contains a space fails to send. |
+| `jsl_event_pass_v2` | DRAFT, awaiting submit | The one to use. Six body variables, the sixth carrying the pass URL. No header, no buttons, so nothing can collide and nothing can silently show the wrong image. |
+
+`jsl_event_pass` should be deleted once v2 is approved, so nobody reaches for it later. That is a
+deliberate decision to leave to a person, since deleting an approved template is not reversible
+without another Meta review.
