@@ -91,7 +91,9 @@ services:
     networks: [internal]
 
   n8n:
-    image: docker.n8n.io/n8nio/n8n:latest
+    build:
+      context: ./n8n
+    image: jsl-events/n8n:local
     restart: unless-stopped
     depends_on:
       postgres: {condition: service_healthy}
@@ -123,6 +125,8 @@ services:
       # W1 and W6 sign broker links with HMAC-SHA256. Node's crypto module is not
       # available in the Code node unless it is allowlisted here.
       NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      # Ticket QR rendering. Installed in deploy/n8n/Dockerfile.
+      NODE_FUNCTION_ALLOW_EXTERNAL: qrcode
       N8N_RUNNERS_ENABLED: "true"
 
       # WhatsApp status webhooks are high volume. Keep only what is useful.
@@ -144,6 +148,10 @@ services:
       BROKER_LINK_SECRET: ${BROKER_LINK_SECRET:?set BROKER_LINK_SECRET in .env}
       # Where the workflows reach pretix on the internal network.
       PRETIX_API_BASE: ${PRETIX_API_BASE:-http://pretix:80/api/v1}
+      # pretix validates the Host header against its configured url and answers
+      # 400 "Unknown host" to anything else. Reaching it as http://pretix on the
+      # compose network sends Host: pretix, so every request must override it.
+      PRETIX_HOST: ${PRETIX_HOST:-${PRETIX_DOMAIN}}
       PRETIX_ORGANIZER: ${PRETIX_ORGANIZER:-jsl}
       PRETIX_EVENT: ${PRETIX_EVENT:-investor-events}
     volumes:

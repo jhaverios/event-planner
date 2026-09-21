@@ -53,7 +53,16 @@
         "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/subevents/?active=true&ordering=date_from",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "options": {}
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
@@ -74,7 +83,16 @@
         "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/questions/",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "options": {}
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
@@ -148,7 +166,16 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.order_payload) }}",
-        "options": {}
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,

@@ -1,0 +1,289 @@
+{
+  "name": "W6 \u2014 Ticket image and PDF by link",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "ticket",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "id": "ticket-link-opened",
+      "name": "Ticket link opened",
+      "webhookId": "c2b8f4d3-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BROKER_LINK_SECRET;\nif (!secret) throw new Error('BROKER_LINK_SECRET is not set.');\n\nconst raw = String($input.first().json.query?.t || '');\nconst q   = $input.first().json.query || {};\n\n// token is \"<ORDERCODE>.<sig>\". The order code is printed on the ticket and is\n// not a secret; the signature is what stops anyone enumerating other tickets.\nconst dot = raw.lastIndexOf('.');\nif (dot < 1) throw new Error('not found');\nconst code = raw.slice(0, dot).toUpperCase();\nconst sig  = raw.slice(dot + 1);\n\n// Namespaced so a ticket link can never be replayed as a broker link.\nconst expected = crypto.createHmac('sha256', secret).update('ticket:' + code).digest('hex').slice(0, 24);\nconst a = Buffer.from(sig.padEnd(24, ' ').slice(0, 24));\nconst b = Buffer.from(expected);\nif (!crypto.timingSafeEqual(a, b)) throw new Error('not found');\n\nconst fmt = String(q.f || 'png').toLowerCase();\nif (!['png', 'pdf'].includes(fmt)) throw new Error('not found');\n\nreturn [{ json: { order_code: code, format: fmt } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "id": "resolve-the-ticket-token",
+      "name": "Resolve the ticket token"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/orders/{{ $json.order_code }}/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "id": "load-the-order",
+      "name": "Load the order",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XC6ptLFoididGmxb",
+          "name": "Pretix API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "fmt",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $('Resolve the ticket token').first().json.format }}",
+              "rightValue": "png"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ],
+      "id": "image-or-pdf?",
+      "name": "Image or PDF?"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const QR = require('qrcode');\nconst order = $('Load the order').first().json;\nconst pos = (order.positions || [])[0];\nif (!pos) throw new Error('not found');\n\n// The QR carries only pretix's opaque 32-character ticket secret. Scanning it\n// resolves to the person server-side; the image itself leaks nothing.\nconst png = await QR.toBuffer(pos.secret, {\n  type: 'png',\n  errorCorrectionLevel: 'M',\n  margin: 2,\n  width: 800,          // square, well inside WhatsApp's 1.91:1 crop limit\n  color: { dark: '#16294dff', light: '#ffffffff' },  // JSL navy on white\n});\n\nreturn [{\n  json: { order_code: order.code, bytes: png.length },\n  binary: { data: { data: png.toString('base64'), mimeType: 'image/png', fileName: `ticket-${order.code}.png` } },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ],
+      "id": "render-the-qr",
+      "name": "Render the QR"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/orderpositions/{{ $json.positions[0].id }}/download/pdf/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          },
+          "retry": {
+            "retry": {
+              "maxTries": 5,
+              "waitBetweenTries": 2000
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        420
+      ],
+      "id": "download-the-ticket-pdf",
+      "name": "Download the ticket PDF",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XC6ptLFoididGmxb",
+          "name": "Pretix API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "set",
+        "inputFieldName": "data",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Cache-Control",
+                "value": "public, max-age=3600"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1100,
+        200
+      ],
+      "id": "send-the-image",
+      "name": "Send the image"
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "set",
+        "inputFieldName": "data",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Cache-Control",
+                "value": "public, max-age=3600"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1100,
+        420
+      ],
+      "id": "send-the-pdf",
+      "name": "Send the PDF"
+    }
+  ],
+  "connections": {
+    "Ticket link opened": {
+      "main": [
+        [
+          {
+            "node": "Resolve the ticket token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve the ticket token": {
+      "main": [
+        [
+          {
+            "node": "Load the order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load the order": {
+      "main": [
+        [
+          {
+            "node": "Image or PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image or PDF?": {
+      "main": [
+        [
+          {
+            "node": "Render the QR",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download the ticket PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render the QR": {
+      "main": [
+        [
+          {
+            "node": "Send the image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download the ticket PDF": {
+      "main": [
+        [
+          {
+            "node": "Send the PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata"
+  }
+}

@@ -1,0 +1,16 @@
+# Overlay for a machine behind a TLS-inspecting proxy, such as the Claude Code
+# sandbox. Without it, n8n's outbound HTTPS calls fail with
+# "self-signed certificate in certificate chain" and every HTTP Request node
+# that talks to WATI, ZeptoMail or any other external API dies.
+#
+# A normal server needs none of this.
+#
+# Use:
+#   cp /root/.ccr/ca-bundle.crt deploy/n8n/certs/
+#   docker compose -f docker-compose.yml -f docker-compose.proxy-ca.yml up -d
+services:
+  n8n:
+    environment:
+      NODE_EXTRA_CA_CERTS: /opt/proxy-ca/ca-bundle.crt
+    volumes:
+      - ./n8n/certs:/opt/proxy-ca:ro

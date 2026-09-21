@@ -18,3 +18,5 @@ backups/
 .idea/
 .vscode/
 *.swp
+deploy/n8n/certs/*.crt
+deploy/n8n/certs/*.pem
