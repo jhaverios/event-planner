@@ -1,0 +1,39 @@
+; Copy to pretix.cfg and fill in. Never commit pretix.cfg.
+; Reference: https://docs.pretix.eu/self-hosting/installation/docker_smallscale/
+
+[pretix]
+instance_name=JSL Wealth Events
+url=https://events.example.com
+currency=INR
+datadir=/data
+trust_x_forwarded_for=on
+trust_x_forwarded_proto=on
+
+[database]
+backend=postgresql
+name=pretix
+user=pretix
+password=CHANGEME
+host=postgres
+port=5432
+
+[redis]
+location=redis://redis:6379/0
+sessions=true
+
+[celery]
+backend=redis://redis:6379/1
+broker=redis://redis:6379/2
+
+[mail]
+from=events@example.com
+host=smtp.example.com
+user=
+password=
+port=587
+tls=on
+ssl=off
+
+[locale]
+default=en
+timezone=Asia/Kolkata

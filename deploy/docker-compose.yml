@@ -52,6 +52,10 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    # "all" runs nginx + gunicorn + the celery worker under supervisord.
+    # On a host whose kernel has no IPv6, the bundled nginx cannot bind [::]:80
+    # and crash-loops silently while gunicorn and celery stay healthy, so
+    # nothing answers on port 80. Add docker-compose.no-ipv6.yml in that case.
     command: ["all"]
     environment:
       # pretix reads /etc/pretix/pretix.cfg; these two only affect the container itself.
