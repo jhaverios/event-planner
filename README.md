@@ -22,7 +22,7 @@ GStack. Treat both as input to the first milestone, not as accepted work.
 | Path | What it is | Confidence |
 |---|---|---|
 | `docs/DRAFT-research-and-architecture.md` | Component research and proposed architecture. Every external claim carries the source URL it was read from; unverified items are marked. | Research verified, architecture unreviewed |
-| `deploy/docker-compose.yml` | Pretix + Postgres + Redis + n8n + optional Caddy on one host. | **Never executed.** Docker is unavailable in the authoring environment, so `docker compose config` has not run against it. |
+| `deploy/docker-compose.yml` | Pretix + Postgres + Redis + n8n + optional Caddy on one host. | Parses: `docker compose config` exits 0 against it. **Never run.** No container has been started, so nothing about runtime behaviour is proven. |
 | `deploy/postgres/init-databases.sh` | Creates the `pretix` and `n8n` roles and databases on first boot. | Syntax checked with `bash -n` only |
 
 Empty directories referenced by the draft architecture (`docs/runbooks`, `docs/decisions`,
