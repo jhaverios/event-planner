@@ -3,6 +3,7 @@ deploy/.env
 deploy/pretix/pretix.cfg
 deploy/caddy/Caddyfile
 deploy/**/*.local.*
+deploy/.admin-credentials
 *.pem
 *.key
 
