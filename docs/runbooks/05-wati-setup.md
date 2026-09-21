@@ -143,3 +143,41 @@ No webhooks needed. Step 5's scheduled poller is viable exactly as planned.
 
 Useful fields on that record: `statusString`, `eventType`, `finalText`, `template.header.*`, and on
 failure `failedCode` and `failedDetail`.
+
+
+## jsl_event_pass, as WATI actually recorded it
+
+Submitted 2026-09-21, status PENDING. Two details decide how the send call must be written.
+
+**The header is a link, not an upload.** `header.link` holds the sample URL and both `mediaHeaderId`
+and `mediaFromPC` are empty. That is the same shape as `onboarding_signoff` and the opposite of
+`im2025_checkin3`, whose baked-in upload defeated the earlier test. Link-type headers are the ones
+WATI is more likely to substitute per message, so this is the promising configuration. Still unproven
+until a real send.
+
+**The button's variable collides with the body's.** WATI recorded:
+
+```
+buttons[0].parameter.urlType          = dynamic
+buttons[0].parameter.buttonParamMapping = {"index": 1, "paramName": "1"}
+customParams                          = ['1','2','3','4','5']
+```
+
+The button's dynamic suffix is mapped to a parameter named `1`, and the body's first variable, the
+client's name, is also named `1`. If WATI resolves them from one flat namespace, sending
+`{"name":"1","value":"Rahul Mehta"}` puts the client's name into the pass URL and the pass becomes
+unreachable, while the greeting still looks correct. The message would appear fine and the button
+would be broken.
+
+Test this deliberately on the first send after approval: send it, then open the button URL from the
+received message rather than trusting the send response. If the two collide, the fix is to resubmit
+with the body starting at `{{2}}` so the numbering cannot overlap.
+
+## Sending the pass by email
+
+Outbound SMTP is blocked in the build environment, from the shell and from inside the containers
+alike, so pretix cannot send mail here. ZeptoMail's HTTPS API is reachable and is what W7 uses:
+`POST https://api.zeptomail.in/v1.1/email` with `Authorization: Zoho-enczapikey <token>`.
+
+This is useful beyond the workaround. It means the pass can be delivered by email today, while the
+WhatsApp template is still in review, and the two channels share one signed ticket link.
