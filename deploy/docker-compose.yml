@@ -131,6 +131,21 @@ services:
       EXECUTIONS_DATA_SAVE_ON_SUCCESS: ${N8N_SAVE_ON_SUCCESS:-all}
 
       N8N_DIAGNOSTICS_ENABLED: "false"
+      # n8n blocks $env in Code nodes and expressions by default, and the
+      # failure is a bare "access to env vars denied" in the log with nothing
+      # shown in the UI. The workflows read PRETIX_API_BASE and the broker link
+      # secret this way. Acceptable here because the instance is single-tenant
+      # and only we author workflows; on a shared instance it would not be,
+      # since any Code node could then read the database password.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+      # Signs each broker's personal registration link so the broker code in
+      # the URL cannot be edited to register under someone else's name.
+      BROKER_LINK_SECRET: ${BROKER_LINK_SECRET:?set BROKER_LINK_SECRET in .env}
+      # Where the workflows reach pretix on the internal network.
+      PRETIX_API_BASE: ${PRETIX_API_BASE:-http://pretix:80/api/v1}
+      PRETIX_ORGANIZER: ${PRETIX_ORGANIZER:-jsl}
+      PRETIX_EVENT: ${PRETIX_EVENT:-investor-events}
     volumes:
       - n8n-data:/home/node/.n8n
       - n8n-files:/files
