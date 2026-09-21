@@ -107,3 +107,39 @@ sent, delivered or failed from a later status read.
 **Still untested: whether an approved template with fixed media accepts a per-recipient image URL.**
 Passing an extra header parameter to `im2025_checkin3` was accepted, but so was everything else, so
 the 200 proves nothing. This needs one real recipient number to settle.
+
+## The template-reuse question: answered, and the answer is no
+
+Tested on 2026-09-21 by sending `im2025_checkin3` to a real handset with an extra header parameter
+pointing at a per-recipient QR image.
+
+**Result: the message was DELIVERED, and it carried the template's baked-in image, not ours.**
+The status record shows the header that actually went out:
+
+```
+template.header.headerTypeString = image
+template.header.mediaHeaderId    = 1489643052186150
+template.header.mediaFromPC      = WhatsApp_Image_2025_10_11_at_10.44.13-....jpeg
+statusString                     = DELIVERED
+```
+
+That media id is the file uploaded when the template was created. Our `header_image` parameter was
+accepted without complaint and silently ignored.
+
+**So an approved template whose media was a fixed upload cannot carry a per-recipient QR.** WATI's
+documentation was right: the header URL has to be declared as a variable at template creation, by
+ticking "Add a different header". Reuse is off the table for the pass; one new template is required
+and Meta has to review it.
+
+This is why the test was worth ten minutes. Both the send call and the status poll returned success
+throughout, so nothing short of looking at the delivered header would have revealed it.
+
+### What the same test proved that is good news
+
+**Delivery tracking works on the Growth plan.** Polling
+`GET /{tenant}/api/v1/whatsApp/messages/{phone}/{localMessageId}` returned `statusString: DELIVERED`
+within about 20 seconds, along with `finalText` showing the rendered body with variables substituted.
+No webhooks needed. Step 5's scheduled poller is viable exactly as planned.
+
+Useful fields on that record: `statusString`, `eventType`, `finalText`, `template.header.*`, and on
+failure `failedCode` and `failedDetail`.
