@@ -181,3 +181,47 @@ alike, so pretix cannot send mail here. ZeptoMail's HTTPS API is reachable and i
 
 This is useful beyond the workaround. It means the pass can be delivered by email today, while the
 WhatsApp template is still in review, and the two channels share one signed ticket link.
+
+## jsl_event_pass v1: approved, and broken in two ways
+
+Approved 2026-09-21 and immediately tested with a real send. It **FAILED**, and the reason is exact:
+
+```
+statusString  = FAILED
+failedDetail  = Dynamic URL button parameter cannot contain spaces
+header LINK   = https://api.qrserver.com/...&data=SAMPLE123   (the approval sample)
+BUTTON url    = https://events.jslwealth.in/webhook/ticket?t={{1}}   (never substituted)
+finalText     = Hello Rahul Mehta, your registration is confirmed. ...
+```
+
+**Fault one: the button and the body share parameter `1`.** WATI tried to put the client's name into
+the dynamic URL and refused it for containing a space. So every client whose name has a space, which
+is nearly all of them, fails. The collision predicted from `buttonParamMapping` is real.
+
+It failing loudly is fortunate. Had the name been a single word the message would have sent, and the
+button would have pointed at `?t=Rahul` for the rest of the event.
+
+**Fault two: a plain URL in the header is static.** The header link stayed on the approval sample.
+Extra `header_image` and `media_url` parameters were accepted and ignored, exactly as on
+`im2025_checkin3`. Pasting a URL rather than uploading a file did not make the header dynamic.
+
+### What the body proved
+
+Body variables substitute perfectly: name, event, date, venue and reference all rendered. So **text
+is the one channel we can rely on**, and the design should lean on it.
+
+### v2 design
+
+| Part | Decision |
+|---|---|
+| Body | Six variables. `{{6}}` carries the full pass URL as plain text. WhatsApp auto-links it. |
+| Button | **None.** Removing it removes the collision entirely. |
+| Header | Image, with the header variable set via the only free-form attribute WATI's UI exposes, `product_image_url` under Shopify. Ignore the commerce label; it is just a named placeholder. |
+| Header sample | A neutral JSL-branded image, **not a QR**. If substitution fails, clients see branding rather than a QR that is not theirs. |
+
+The reasoning: a link in the body is certain to work because body substitution is proven. The image
+header is an upgrade that either works or degrades to branding. Nothing in the message is ever wrong,
+which is not true of v1, where a failed substitution would have shown every client the same sample QR.
+
+A URL in the body also removes the dependency on `events.jslwealth.in` being the exact approved
+domain, since the whole URL is a variable rather than a baked-in prefix.
