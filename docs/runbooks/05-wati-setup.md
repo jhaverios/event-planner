@@ -306,3 +306,132 @@ cannot quietly deliver the wrong person's QR.
 Submitting both costs nothing and gives two independent routes. v3 is the one to use if it works,
 because a QR already on screen beats a link at a venue door. v2 is the fallback that needs no image
 substitution at all.
+
+---
+
+## The header variable: what the dashboard actually allows
+
+Three attempts at a per-recipient QR in the media header failed in the WATI UI before the
+cause was clear. Recording it so nobody repeats them.
+
+### Attempt 1 — positional variable continuing the body's numbering
+
+Header link `...&data={{6}}` with body `{{1}}`–`{{5}}`, created through the API. The API
+accepted it and stored it. The dashboard then refused to save the template, reporting
+`Body can't be empty or more than 1024 characters` while the counter read 157/1024.
+
+The error named the wrong component. The real signal was in the Sample Content list, which
+rendered the header's sample **first**, ahead of the body's five.
+
+### What that proved: WATI flattens components into one ordered list, header first
+
+Typing samples in body order produced a message shifted by one — the greeting rendered the
+event name, and the body's last variable was left unfilled as a literal `{{reference}}`.
+Re-typing with the header's sample in box 1 and the body's five in boxes 2–6 rendered
+correctly.
+
+So the flat `customParams` list WATI exposes is ordered **header, then body, then buttons**,
+regardless of the numbers written in the template text. This is the same flat namespace that
+made `jsl_event_pass` v1 put a client's name inside its button URL.
+
+### Attempt 2 — positional variable renumbered to `{{1}}`
+
+Rejected with a precise error: **`Header variables incorrect`**. Positional variables are not
+valid in a media header.
+
+### Attempt 3 — the "Add Variable" control under the header field
+
+Opens a **Select attribute** dialog offering exactly two entries, both named
+`product_image_url`, one under Shopify and one under Woocommerce. There is no free-form
+option and no custom attribute. The control is wired to WATI's e-commerce integrations.
+
+**This corrects an earlier claim in this runbook** that `product_image_url` is "the only
+free-form attribute WATI's UI exposes, ignore the commerce label". It is not free-form. It
+resolves against Shopify/Woocommerce product data, which this account does not have.
+
+### What the documentation says the correct shape is
+
+Per WATI's help centre on personalised media in campaigns, the header variable is a **named
+placeholder typed directly into the URL field**, and **the entire URL is the variable**:
+
+```
+{{qr_url}}
+```
+
+Not `https://host/path?data={{qr_url}}`. The whole value is supplied at send time, or read
+from a contact attribute of the same name, set manually, by CSV import, or by API.
+
+This matches the underlying platform: Meta does not perform string substitution inside a
+media header URL. At send time a complete image URL is supplied. A variable spliced into a
+query parameter has nothing to map onto, which is what `Header variables incorrect` means.
+
+**Also corrects** the earlier conclusion that "header links do take variables", which was
+drawn from the API accepting a draft. Draft storage is not approval and is not send. The API
+accepts shapes the platform will not honour.
+
+### Consequence, if the dynamic header is used
+
+Nothing about the sample URL is baked in. `api.qrserver.com` would be an approval-time sample
+only, and the header could be repointed at `events.jslwealth.in/webhook/ticket?t=...` with no
+further Meta review.
+
+Two things remain unverified and must be tested against a real send:
+
+- whether `qr_url` may be passed inline in the send call's `parameters` array, or must first
+  be written to the contact as an attribute. If the latter, the confirmation send costs two
+  API calls instead of one — roughly 1,200 calls for a 200-guest event against the Growth
+  plan's 10,000 per month, so it still fits.
+- whether Meta approves a template whose header URL is a bare variable.
+
+## What was actually submitted
+
+Read back from `getMessageTemplates`, not assumed. `jsl_event_v3` is **PENDING** with the
+dynamic header intact — the QR-in-chat design, not the simplified body-link fallback that was
+briefly considered.
+
+Note the element name is `jsl_event_v3`, **not** `jsl_event_pass_v3`.
+
+| Part | Value |
+|---|---|
+| Name | `jsl_event_v3` |
+| Status | PENDING |
+| Category | UTILITY |
+| Language | `en_US` |
+| Header | image, `link` = `{{qr_url}}` — a bare variable, no `mediaHeaderId`, no baked domain |
+| Body | five positional tokens `{{1}}`–`{{5}}` |
+| Footer | none |
+| Buttons | none |
+
+### The mapping W2 must use
+
+The body text stores **positional** tokens while `customParams` names them. Send-time
+parameters go by **name**, in this order:
+
+| Name | Carries | Sample at approval |
+|---|---|---|
+| `name` | client name | Rahul Mehta |
+| `event` | event title | Contra Fund and SIF Session |
+| `datetime` | start, human readable | 24 September 2026, 6:30 PM |
+| `venue` | venue line | Hotel The Fern, Akota, Vadodara |
+| `reference` | Pretix order code | ABC123 |
+| `qr_url` | **complete** image URL for that recipient | an api.qrserver.com sample |
+
+`qr_url` is listed **last** in `customParams`, after the five body parameters — the opposite of
+the header-first ordering the dashboard's Sample Content boxes use. Do not infer send-time
+order from the dashboard's box order; read `customParams`.
+
+Because `link` is a bare variable, `api.qrserver.com` is an approval-time sample only. Once
+jprod is live the header is repointed at `events.jslwealth.in/webhook/ticket?...` — W6's own
+endpoint, JSL navy QR, no third party handling ticket secrets — **with no further Meta review**.
+
+### Still unverified
+
+- whether `qr_url` may be passed inline in the send call's `parameters` array, or must first be
+  written to the contact as an attribute. Test on the first real send.
+- whether Meta approves a bare-variable header at all. The result of this review answers it.
+
+### The door fallback stays regardless
+
+The order code is made the primary check-in method, not the fallback. Door staff search the
+reference and redeem, rather than depending on a scan succeeding on a dim phone in a queue.
+The QR stays the fast path.

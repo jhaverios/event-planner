@@ -13,6 +13,9 @@ backups/
 *.sql
 *.dump
 
+# ...but schema migrations are source, not runtime data
+!deploy/postgres/*.sql
+
 # Editor / OS noise
 .DS_Store
 .idea/
