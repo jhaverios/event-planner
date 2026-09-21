@@ -49,10 +49,12 @@ services:
     environment:
       PRETIX_API_BASE: ${PRETIX_API_BASE:-http://pretix:80/api/v1}
       PRETIX_HOST: ${PRETIX_HOST:-${PRETIX_DOMAIN}}
-      PRETIX_API_TOKEN: ${PRETIX_API_TOKEN:?set PRETIX_API_TOKEN}
+      # Empty on a first deploy: the token cannot exist until pretix itself is
+      # set up. The portal says so plainly rather than failing to boot.
+      PRETIX_API_TOKEN: ${PRETIX_API_TOKEN:-}
       PRETIX_ORGANIZER: ${PRETIX_ORGANIZER:-jsl}
       PRETIX_EVENT: ${PRETIX_EVENT:-investor-events}
-      DIRECTORY_DSN: postgresql://directory:${DIRECTORY_DB_PASSWORD:?set DIRECTORY_DB_PASSWORD}@postgres:5432/directory
+      DIRECTORY_DSN: ${DIRECTORY_DSN:-postgresql://directory:${DIRECTORY_DB_PASSWORD:-}@postgres:5432/directory}
       BROKER_LINK_SECRET: ${BROKER_LINK_SECRET:?set BROKER_LINK_SECRET}
       WATI_API_BASE: ${WATI_API_BASE:-}
       WATI_TOKEN: ${WATI_TOKEN:-}

@@ -2,7 +2,7 @@
 # Read-only survey of the target server. Changes nothing, installs nothing.
 # Run on jprod, paste the output back.
 #
-#   curl -fsSL https://raw.githubusercontent.com/jhaverios/event-planner/main/scripts/preflight.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jhaverios/event-planner/claude/vibrant-bohr-nd6tg2/scripts/preflight.sh | bash
 # or, if the repo is already cloned:
 #   bash scripts/preflight.sh
 
@@ -50,8 +50,35 @@ ls -1 /etc/nginx/conf.d/*.conf 2>/dev/null | xargs -r -n1 basename || true
 line "Running containers"
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' 2>/dev/null || echo "none or docker unavailable"
 
-line "Public address"
+line "Public address — this is the value for the DNS A record"
 curl -s --max-time 8 https://checkip.amazonaws.com 2>/dev/null || echo "could not determine"
+
+line "EC2 instance"
+TOK=$(curl -s --max-time 3 -X PUT http://169.254.169.254/latest/api/token \
+      -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null)
+md() {
+  v=$(curl -s --max-time 3 -H "X-aws-ec2-metadata-token: $TOK" \
+      "http://169.254.169.254/latest/meta-data/$1" 2>/dev/null)
+  # A metadata value never contains a space; anything that does is an error page.
+  case "$v" in ''|*' '*) echo '-' ;; *) echo "$v" ;; esac
+}
+for f in instance-id instance-type public-ipv4 local-ipv4; do
+  printf '%-14s %s\n' "$f" "$(md "$f")"
+done
+echo
+echo "Check in the EC2 console whether that address is an ELASTIC IP."
+echo "A plain public IPv4 is reassigned when the instance is stopped and"
+echo "started, which would break events.jslwealth.in silently and after the"
+echo "invitations have already gone out. Allocate and attach one first."
+
+line "Outbound egress the portal needs"
+# A firewall that blocks these is invisible until a client does not get their
+# pass, so prove it here rather than at the door.
+for h in live-mt-server.wati.io api.zeptomail.in api.qrserver.com; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://$h" 2>/dev/null || echo FAIL)
+  printf '%-26s %s\n' "$h" "$code"
+done
+echo "Any response at all is fine here; FAIL or 000 means egress is blocked."
 
 line "Ports reachable from outside"
 echo "Check in the EC2 console that the security group allows inbound 80 and 443 from 0.0.0.0/0."

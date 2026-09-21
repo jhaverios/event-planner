@@ -103,6 +103,26 @@ app.mount("/assets", StaticFiles(directory=STATIC / "assets"), name="assets")
 
 # ---------------------------------------------------------------- api
 
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    """What is wired up, said plainly.
+
+    A fresh deploy has no pretix API token yet, because the token cannot be
+    created until pretix itself has been set up. Reporting that as "degraded"
+    with the reason beats refusing to start with a stack trace.
+    """
+    checks = {
+        "pretix_token": bool(config.PRETIX_TOKEN),
+        "directory": db.available(),
+        "whatsapp": wati.configured(),
+        "email": mailer.configured(),
+        "link_secret": bool(auth.SECRET),
+    }
+    missing = [k for k, v in checks.items() if not v]
+    return {"status": "ok" if not missing else "degraded",
+            "checks": checks, "missing": missing}
+
+
 @app.get("/api/session")
 def session(request: Request, authorization: str = Header(None)):
     who = _identity(request, authorization)
