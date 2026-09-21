@@ -79,6 +79,27 @@ def qr_url_for(secret):
     return config.QR_BASE + secret
 
 
+WA_PARAM_MAX = 200
+
+
+def event_line(name, details):
+    """The event as the client reads it, with the speaker folded in.
+
+    The approved template has six fixed slots and no speaker slot, but this one
+    is free text, so the speaker reaches WhatsApp without another Meta review.
+    Truncated rather than allowed to fail: WATI rejects a parameter over 200
+    characters, and a future event with a long title must not silently break a
+    send.
+    """
+    who = db.speaker_line(details)
+    line = f"{name}, with {who}" if who else name
+    if len(line) <= WA_PARAM_MAX:
+        return line
+    if len(name) <= WA_PARAM_MAX:
+        return name
+    return name[:WA_PARAM_MAX - 1].rstrip() + "\u2026"
+
+
 # ---------------------------------------------------------------- screens
 
 @app.get("/")
@@ -148,13 +169,20 @@ def session(request: Request, authorization: str = Header(None)):
 def events(request: Request, authorization: str = Header(None)):
     _identity(request, authorization)
     now = dt.datetime.now(dt.timezone.utc)
+    details = db.all_event_details()
     out = []
     for s in pretix.subevents():
         try:
             past = dt.datetime.fromisoformat(s["date_from"].replace("Z", "+00:00")) < now
         except Exception:
             past = False
-        out.append({**s, "when": when_text(s["date_from"]), "past": past})
+        d = details.get(s["id"], {})
+        out.append({**s, "when": when_text(s["date_from"]), "past": past,
+                    "speaker": d.get("speaker") or "",
+                    "speaker_title": d.get("speaker_title") or "",
+                    "speaker_org": d.get("speaker_org") or "",
+                    "note": d.get("note") or "",
+                    "description": d.get("description") or ""})
     return out
 
 
@@ -215,6 +243,7 @@ def register(body: Registration, request: Request, authorization: str = Header(N
                  "them the client cannot be sent their pass")
 
     ev = pretix.subevent(body.subevent)
+    details = db.event_details(body.subevent)
     order = pretix.create_order(name=name, phone=f"+91{phone}" if phone else "",
                                 email=email, broker_code=broker_code,
                                 subevent_id=body.subevent)
@@ -223,7 +252,8 @@ def register(body: Registration, request: Request, authorization: str = Header(N
     delivery = {}
     if phone:
         ok, detail = wati.send_pass(
-            phone=f"91{phone}", name=name, event=ev["name"],
+            phone=f"91{phone}", name=name,
+            event=event_line(ev["name"], details),
             when=when_text(ev["date_from"]), venue=ev["location"],
             reference=order["code"], qr_url=qr)
         delivery["whatsapp"] = {"ok": ok, "detail": detail}
@@ -231,7 +261,7 @@ def register(body: Registration, request: Request, authorization: str = Header(N
         ok, detail = mailer.send_pass(
             to_email=email, to_name=name, event=ev["name"],
             when=when_text(ev["date_from"]), venue=ev["location"],
-            reference=order["code"], qr_url=qr)
+            reference=order["code"], qr_url=qr, details=details)
         delivery["email"] = {"ok": ok, "detail": detail}
 
     if who["role"] in ("desk", "broker"):
@@ -282,7 +312,10 @@ def stats(request: Request, subevent: int = Query(...),
         b["rate"] = round(100 * b["attended"] / b["registered"]) if b["registered"] else 0
 
     people.sort(key=lambda r: (not r["attended"], r["name"]))
-    return {"scope": who["role"], "subevent": pretix.subevent(subevent),
+    ev = pretix.subevent(subevent)
+    ev.update({k: v or "" for k, v in db.event_details(subevent).items()
+               if k in db.DETAIL_FIELDS})
+    return {"scope": who["role"], "subevent": ev,
             "total": total, "attended": attended, "no_show": total - attended,
             "rate": round(100 * attended / total) if total else 0,
             "rsvp": rsvp,

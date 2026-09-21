@@ -58,3 +58,30 @@ CREATE TRIGGER brokers_touch BEFORE UPDATE ON brokers
 DROP TRIGGER IF EXISTS clients_touch ON clients;
 CREATE TRIGGER clients_touch BEFORE UPDATE ON clients
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+-- What the invitation says, as opposed to what the ticket does.
+--
+-- Pretix owns the facts that affect ticketing and check-in: when it starts,
+-- how many seats, which check-in list. It does not own who is speaking, and
+-- the speaker is often the reason somebody comes. Keeping that here means a
+-- structured name, title and firm rather than one blob of description text,
+-- which is what the WhatsApp event line and the pass email both need.
+--
+-- Every column is optional on purpose. An event added in pretix with no row
+-- here still registers and still checks people in; the admin screen says the
+-- details are missing rather than sending a half-empty invitation.
+CREATE TABLE IF NOT EXISTS event_details (
+    subevent_id   BIGINT PRIMARY KEY,
+    speaker       TEXT,
+    speaker_title TEXT,
+    speaker_org   TEXT,
+    description   TEXT,
+    note          TEXT,
+    rsvp_name     TEXT,
+    rsvp_phone    TEXT,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS event_details_touch ON event_details;
+CREATE TRIGGER event_details_touch BEFORE UPDATE ON event_details
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();

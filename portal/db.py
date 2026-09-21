@@ -86,3 +86,62 @@ def broker_names(codes):
         c.execute("SELECT broker_code, name FROM brokers WHERE broker_code = ANY(%s)",
                   (list(codes),))
         return {r["broker_code"]: r["name"] for r in c.fetchall()}
+
+
+# --- what the invitation says, as opposed to what the ticket does ----------
+
+DETAIL_FIELDS = ("speaker", "speaker_title", "speaker_org",
+                 "description", "note", "rsvp_name", "rsvp_phone")
+
+
+def event_details(subevent_id):
+    if not available():
+        return {}
+    with _cur() as c:
+        c.execute("SELECT * FROM event_details WHERE subevent_id = %s", (subevent_id,))
+        row = c.fetchone()
+        return dict(row) if row else {}
+
+
+def all_event_details():
+    """One query for the whole event list, rather than one per event."""
+    if not available():
+        return {}
+    with _cur() as c:
+        c.execute("SELECT * FROM event_details")
+        return {r["subevent_id"]: dict(r) for r in c.fetchall()}
+
+
+def set_event_details(subevent_id, **fields):
+    """Upsert. A field left out keeps whatever is stored; passing an empty
+    string clears it, which is how a wrong speaker gets removed rather than
+    being stuck because blank was read as 'no change'."""
+    if not available():
+        raise RuntimeError("the directory database is not configured")
+    given = {k: (v.strip() if isinstance(v, str) else v)
+             for k, v in fields.items() if k in DETAIL_FIELDS and v is not None}
+    cols = ", ".join(given)
+    marks = ", ".join(["%s"] * len(given))
+    sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in given)
+    with _cur() as c:
+        if not given:
+            c.execute("INSERT INTO event_details (subevent_id) VALUES (%s) "
+                      "ON CONFLICT (subevent_id) DO NOTHING", (subevent_id,))
+        else:
+            c.execute(
+                f"INSERT INTO event_details (subevent_id, {cols}) "
+                f"VALUES (%s, {marks}) "
+                f"ON CONFLICT (subevent_id) DO UPDATE SET {sets}",
+                (subevent_id, *given.values()))
+
+
+def speaker_line(details):
+    """'Sanket Joshi, ICICI Prudential AMC' — the form that reads naturally
+    after 'with'. Title is left out here: it matters on the page, not in a
+    one-line credit."""
+    if not details or not details.get("speaker"):
+        return ""
+    bits = [details["speaker"]]
+    if details.get("speaker_org"):
+        bits.append(details["speaker_org"])
+    return ", ".join(bits)

@@ -127,7 +127,16 @@
     try {
       data = await JSL.get('/api/stats?subevent=' + id);
       $('title').textContent = data.subevent.name;
-      $('denom').textContent = `${data.subevent.location} · registrations and turnout, live from the door.`;
+      const sv = data.subevent;
+      const credit = [sv.speaker_title, sv.speaker_org].filter(Boolean).join(', ');
+      const lead = sv.speaker
+        ? `${sv.speaker}${credit ? ' — ' + credit : ''} · ${sv.location}`
+        : sv.location;
+      // Say when the invitation details are missing rather than quietly
+      // rendering a half-empty event.
+      $('denom').textContent = sv.speaker
+        ? `${lead} · registrations and turnout, live from the door.`
+        : `${lead} · no speaker recorded for this event yet.`;
       figs(data); brokers(data); people(data, $('q').value);
     } catch (e) {
       $('boot').hidden = false;

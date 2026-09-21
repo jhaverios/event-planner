@@ -18,7 +18,8 @@ def configured():
     return bool(config.ZEPTO_KEY and config.MAIL_FROM)
 
 
-def send_pass(*, to_email, to_name, event, when, venue, reference, qr_url):
+def send_pass(*, to_email, to_name, event, when, venue, reference, qr_url,
+              details=None):
     if not configured():
         return False, "ZeptoMail is not configured"
     if not to_email:
@@ -27,7 +28,8 @@ def send_pass(*, to_email, to_name, event, when, venue, reference, qr_url):
         "from": {"address": config.MAIL_FROM, "name": config.MAIL_FROM_NAME},
         "to": [{"email_address": {"address": to_email, "name": to_name}}],
         "subject": f"Your pass — {event}",
-        "htmlbody": _html(to_name, event, when, venue, reference, qr_url),
+        "htmlbody": _html(to_name, event, when, venue, reference, qr_url,
+                          details or {}),
     }
     try:
         r = httpx.post(API, json=body, timeout=25.0,
@@ -40,8 +42,27 @@ def send_pass(*, to_email, to_name, event, when, venue, reference, qr_url):
     return True, "accepted"
 
 
-def _html(name, event, when, venue, reference, qr_url):
+def _html(name, event, when, venue, reference, qr_url, details):
     e = html.escape
+
+    def row(label, value):
+        return (f'<tr><td style="color:#5b6b78;padding:4px 14px 4px 0;'
+                f'white-space:nowrap;vertical-align:top;">{label}</td>'
+                f'<td>{e(value)}</td></tr>') if value else ""
+
+    # The speaker is usually the reason somebody comes, so it sits with the
+    # event rather than below the fold. Title and firm on one line under it.
+    speaker = details.get("speaker") or ""
+    credit = ", ".join(x for x in (details.get("speaker_title"),
+                                   details.get("speaker_org")) if x)
+    speaker_row = ""
+    if speaker:
+        sub = (f'<div style="color:#5b6b78;font-size:12.5px;">{e(credit)}</div>'
+               if credit else "")
+        speaker_row = (f'<tr><td style="color:#5b6b78;padding:4px 14px 4px 0;'
+                       f'white-space:nowrap;vertical-align:top;">Speaker</td>'
+                       f'<td>{e(speaker)}{sub}</td></tr>')
+    note = details.get("note") or ""
     # Inline styles only: every mail client strips a stylesheet. Navy and the
     # serif face are the house tokens, so the mail reads as the portal does.
     return f"""<!doctype html><html><body style="margin:0;background:#f7f8f9;
@@ -54,12 +75,14 @@ def _html(name, event, when, venue, reference, qr_url):
 <tr><td style="padding:22px;">
 <p style="margin:0 0 16px;font-size:16px;">Hello {e(name)}, your registration is confirmed.</p>
 <table role="presentation" cellpadding="0" cellspacing="0" style="font-size:14px;width:100%;">
-<tr><td style="color:#5b6b78;padding:4px 14px 4px 0;">Event</td><td>{e(event)}</td></tr>
-<tr><td style="color:#5b6b78;padding:4px 14px 4px 0;">Date and time</td><td>{e(when)}</td></tr>
-<tr><td style="color:#5b6b78;padding:4px 14px 4px 0;">Venue</td><td>{e(venue)}</td></tr>
-<tr><td style="color:#5b6b78;padding:4px 14px 4px 0;">Reference</td>
+{row("Event", event)}
+{speaker_row}
+{row("Date and time", when)}
+{row("Venue", venue)}
+<tr><td style="color:#5b6b78;padding:4px 14px 4px 0;white-space:nowrap;">Reference</td>
     <td style="font-variant-numeric:tabular-nums;font-weight:600;">{e(reference)}</td></tr>
 </table>
+{f'<p style="margin:14px 0 0;font-size:13px;color:#5b6b78;">{e(note)}</p>' if note else ''}
 <div style="text-align:center;margin:22px 0 6px;">
   <img src="{e(qr_url)}" alt="Entry QR code" width="240" height="240"
        style="border:1px solid #e3e7ea;border-radius:8px;"></div>

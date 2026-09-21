@@ -31,6 +31,7 @@
       <div class="field">
         <label for="ev">Event</label>
         <select id="ev" required></select>
+        <div class="hint" id="evh"></div>
       </div>
 
       <div class="field">
@@ -81,6 +82,22 @@
   let session = null, taIndex = -1, taRows = [], done = [];
 
   const brokerCode = () => ($('bc').value || '').trim().toUpperCase();
+  let events = [];
+
+  // A broker on the phone to a client gets asked "who's speaking?" more often
+  // than anything else, so it sits under the picker rather than nowhere.
+  function showEvent() {
+    const e = events.find(x => x.id === +$('ev').value);
+    if (!e) return ($('evh').textContent = '');
+    const bits = [];
+    if (e.speaker) {
+      const credit = [e.speaker_title, e.speaker_org].filter(Boolean).join(', ');
+      bits.push(credit ? `${e.speaker} — ${credit}` : e.speaker);
+    }
+    if (e.location) bits.push(e.location);
+    if (e.note) bits.push(e.note);
+    $('evh').textContent = bits.join(' · ');
+  }
 
   // --- typeahead -----------------------------------------------------------
   // Only useful once a directory has been loaded; until the client file
@@ -248,8 +265,11 @@
         $('boot').textContent = 'There is no upcoming event to register for.';
         return;
       }
+      events = live;
       $('ev').innerHTML = live.map(e =>
         `<option value="${e.id}">${JSL.esc(e.name)} · ${JSL.esc(e.when)}</option>`).join('');
+      $('ev').addEventListener('change', showEvent);
+      showEvent();
 
       const ch = [];
       if (!session.channels.whatsapp) ch.push('WhatsApp is not configured');
