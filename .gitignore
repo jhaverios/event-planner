@@ -1,0 +1,19 @@
+# Secrets and local state — never commit
+deploy/.env
+deploy/pretix/pretix.cfg
+deploy/caddy/Caddyfile
+deploy/**/*.local.*
+*.pem
+*.key
+
+# Runtime data
+data/
+backups/
+*.sql
+*.dump
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

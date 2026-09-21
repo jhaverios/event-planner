@@ -1,0 +1,161 @@
+# JSL Wealth event portal — single-host stack for jprod.
+#
+# Two ways to run it:
+#   A) jprod already has nginx/Traefik/Caddy on :80/:443
+#        docker compose up -d
+#      Then point the existing proxy at 127.0.0.1:8345 (pretix) and 127.0.0.1:5678 (n8n).
+#      See ../deploy/reverse-proxy/nginx-snippet.conf.
+#   B) nothing is listening on :80/:443
+#        docker compose --profile edge up -d
+#      Caddy takes both ports and gets Let's Encrypt certificates automatically.
+#
+# Run scripts/preflight.sh on jprod first — it tells you which case you are in.
+
+name: jsl-events
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      PRETIX_DB_PASSWORD: ${PRETIX_DB_PASSWORD:?set PRETIX_DB_PASSWORD in .env}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?set N8N_DB_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  pretix:
+    image: pretix/standalone:stable
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    command: ["all"]
+    environment:
+      # pretix reads /etc/pretix/pretix.cfg; these two only affect the container itself.
+      TZ: ${TZ:-Asia/Kolkata}
+      PRETIX_REDIS_LOCATION: redis://redis:6379/0
+    volumes:
+      - pretix-data:/data
+      - ./pretix/pretix.cfg:/etc/pretix/pretix.cfg:ro
+    ports:
+      # Bound to loopback: an edge proxy (Caddy below, or the host's own nginx) fronts it.
+      - "127.0.0.1:8345:80"
+    networks: [internal]
+
+  # Periodic pretix jobs (expiring carts, scheduled emails, cleanup).
+  # pretix ships no internal scheduler; the documented way is to run `pretix cron`
+  # every 15-45 minutes from outside. This sidecar does that without a host crontab
+  # and without mounting the Docker socket.
+  pretix-cron:
+    image: pretix/standalone:stable
+    restart: unless-stopped
+    depends_on:
+      pretix: {condition: service_started}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - 'while true; do sleep ${PRETIX_CRON_INTERVAL:-900}; pretix cron || echo "pretix cron failed at $$(date -Is)"; done'
+    environment:
+      TZ: ${TZ:-Asia/Kolkata}
+    volumes:
+      - pretix-data:/data
+      - ./pretix/pretix.cfg:/etc/pretix/pretix.cfg:ro
+    networks: [internal]
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:?set N8N_DB_PASSWORD in .env}
+
+      N8N_HOST: ${N8N_DOMAIN:?set N8N_DOMAIN in .env}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://${N8N_DOMAIN}/
+      N8N_EDITOR_BASE_URL: https://${N8N_DOMAIN}/
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
+
+      # Encrypts stored credentials. Losing it means re-entering every credential.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+
+      GENERIC_TIMEZONE: ${TZ:-Asia/Kolkata}
+      TZ: ${TZ:-Asia/Kolkata}
+
+      # W1 and W6 sign broker links with HMAC-SHA256. Node's crypto module is not
+      # available in the Code node unless it is allowlisted here.
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      N8N_RUNNERS_ENABLED: "true"
+
+      # WhatsApp status webhooks are high volume. Keep only what is useful.
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: ${N8N_EXECUTION_RETENTION_HOURS:-720}
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: ${N8N_SAVE_ON_SUCCESS:-all}
+
+      N8N_DIAGNOSTICS_ENABLED: "false"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - n8n-files:/files
+    ports:
+      - "127.0.0.1:5678:5678"
+    networks: [internal]
+
+  # Only started with: docker compose --profile edge up -d
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["edge"]
+    restart: unless-stopped
+    depends_on: [pretix, n8n]
+    environment:
+      PRETIX_DOMAIN: ${PRETIX_DOMAIN:?set PRETIX_DOMAIN in .env}
+      N8N_DOMAIN: ${N8N_DOMAIN:?set N8N_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    networks: [internal]
+
+volumes:
+  postgres-data:
+  redis-data:
+  pretix-data:
+  n8n-data:
+  n8n-files:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal:
+    driver: bridge
