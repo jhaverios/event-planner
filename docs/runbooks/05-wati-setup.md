@@ -435,3 +435,67 @@ endpoint, JSL navy QR, no third party handling ticket secrets — **with no furt
 The order code is made the primary check-in method, not the fallback. Door staff search the
 reference and redeem, rather than depending on a scan succeeding on a dim phone in a queue.
 The QR stays the fast path.
+
+---
+
+## Approved, sent, delivered, scanned — the loop closed end to end
+
+2026-09-21. Every line below is a real API response against the live account and a
+running Pretix, not a design intention.
+
+### Meta accepts a bare-variable media header
+
+`jsl_event_v3` came back **APPROVED** with `header.link` still `{{qr_url}}`. The open
+question of whether Meta would approve a header whose entire URL is a variable is
+answered: it does.
+
+### `qr_url` is supplied inline at send time
+
+The larger open question — contact attribute or send parameter — is answered in favour
+of the cheap option. It rides in the same `parameters` array as the body values:
+
+```http
+POST {base}/api/v1/sendTemplateMessage?whatsappNumber=91XXXXXXXXXX
+{"template_name":"jsl_event_v3","broadcast_name":"jsl_v3_verify_MKXUT",
+ "parameters":[{"name":"name","value":"..."},
+               {"name":"event","value":"..."},
+               {"name":"datetime","value":"..."},
+               {"name":"venue","value":"..."},
+               {"name":"reference","value":"MKXUT"},
+               {"name":"qr_url","value":"https://.../create-qr-code/?...&data=<secret>"}]}
+```
+
+Returns `200 {"result": true}`. **One API call per message, not two.** No contact
+attribute has to be written first, so the Growth plan's 10,000 monthly calls stretch to
+roughly ten 200-guest events rather than five.
+
+### Delivery is readable by polling, without webhooks
+
+`GET /api/v1/getMessages/{number}` returned `statusString: DELIVERED` for the send, and
+still carries the earlier `FAILED` with `Dynamic URL button parameter cannot contain
+spaces` from the broken v1 template. Status polling works on Growth; W5 does not need a
+plan upgrade.
+
+### The whole chain, in order
+
+| Step | Result |
+|---|---|
+| Order created for subevent 2 | `201`, code `MKXUT`, 32-character secret |
+| WhatsApp sent with that secret as the QR | `200 {"result": true}` |
+| Delivery polled back | `DELIVERED` |
+| Door scan of that secret | `status: ok`, attendee `Nimish Shah` |
+| Same secret scanned again | `status: error`, `reason: already_redeemed` |
+
+### Order codes are five characters
+
+Previously recorded as uncertain. `MKXUT` — five characters. That is what
+`{{reference}}` carries and what door staff type when a scan will not read.
+
+### Housekeeping
+
+Order `MKXUT` is test data against the real 24 September subevent and is already
+redeemed. Cancel it before the event so the attendance count starts clean.
+
+The ticket secret for that order appeared in a development transcript. It is spent, and
+the order is to be cancelled, so no action beyond the cancellation is needed — but the
+general rule holds: secrets belong in the QR and nowhere a human can copy them.
