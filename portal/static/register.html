@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register a client — Jhaveri Securities</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">Jhaveri Securities</span>
+  <span class="who" id="who"></span>
+</header>
+
+<main class="main">
+  <div class="pagehead"><h1>Register a client</h1></div>
+  <p class="denom" id="denom">The client is sent their pass the moment you submit.</p>
+
+  <div id="boot" class="note">Loading…</div>
+
+  <form id="form" hidden>
+    <div class="card">
+      <div class="field">
+        <label for="ev">Event</label>
+        <select id="ev" required></select>
+      </div>
+
+      <div class="field">
+        <label for="nm">Client name</label>
+        <input type="text" id="nm" autocomplete="off" required
+               placeholder="Start typing — your clients appear below"
+               aria-describedby="nmh" role="combobox" aria-expanded="false"
+               aria-controls="ta" aria-autocomplete="list">
+        <div class="ta" id="ta" role="listbox" hidden></div>
+        <div class="hint" id="nmh">Pick one of yours, or type a new person's name in full.</div>
+      </div>
+
+      <div class="field">
+        <label for="ph">Mobile number</label>
+        <input type="tel" id="ph" inputmode="numeric" autocomplete="off"
+               placeholder="10 digits, starting 6 to 9" aria-describedby="phh">
+        <div class="hint" id="phh">This is the number the WhatsApp pass goes to.</div>
+      </div>
+
+      <div class="field">
+        <label for="em">Email address <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+        <input type="email" id="em" autocomplete="off" placeholder="name@example.com"
+               aria-describedby="emh">
+        <div class="hint" id="emh">If given, the same pass is emailed as well.</div>
+      </div>
+
+      <button class="btn" id="go" type="submit">Register and send pass</button>
+      <div class="hint" id="err" style="color:var(--neg);margin-top:10px" hidden></div>
+    </div>
+  </form>
+
+  <div id="done"></div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  let session = null, chosen = null, taIndex = -1, taRows = [];
+
+  // --- typeahead -----------------------------------------------------------
+  // Debounced because this fires per keystroke; 160ms is below the point a
+  // typist notices a lag and above the point we ask the database per letter.
+  const search = JSL.debounce(async q => {
+    if (q.trim().length < 2) return closeTa();
+    let rows = [];
+    try { rows = await JSL.get('/api/clients?q=' + encodeURIComponent(q)); }
+    catch (e) { return closeTa(); }
+    taRows = rows;
+    if (!rows.length) return closeTa();
+    $('ta').innerHTML = rows.map((r, i) => `
+      <button type="button" role="option" data-i="${i}" aria-selected="false">
+        <span class="nm">${JSL.esc(r.name)}</span>
+        <span class="dt">${JSL.esc(JSL.contactLine(r))}</span>
+      </button>`).join('');
+    $('ta').hidden = false;
+    $('nm').setAttribute('aria-expanded', 'true');
+    taIndex = -1;
+  }, 160);
+
+  function closeTa() {
+    $('ta').hidden = true;
+    $('nm').setAttribute('aria-expanded', 'false');
+    taIndex = -1; taRows = [];
+  }
+
+  function pick(i) {
+    const r = taRows[i];
+    if (!r) return;
+    chosen = r;
+    $('nm').value = r.name;
+    $('ph').value = r.phone || '';
+    $('em').value = r.email || '';
+    closeTa();
+    // Say plainly what was filled in and what still needs a hand, rather than
+    // leaving the broker to notice an empty box.
+    const gaps = [];
+    if (!r.phone) gaps.push('no mobile on file');
+    if (!r.email) gaps.push('no email on file');
+    $('nmh').textContent = gaps.length
+      ? `From your client list — ${gaps.join(', ')}. Fill in what you have.`
+      : 'From your client list. Details filled in below.';
+    $('nmh').className = gaps.length ? 'hint warn' : 'hint';
+    ($ (r.phone ? 'em' : 'ph')).focus();
+  }
+
+  $('nm').addEventListener('input', e => {
+    chosen = null;
+    $('nmh').className = 'hint';
+    $('nmh').textContent = "Pick one of yours, or type a new person's name in full.";
+    search(e.target.value);
+  });
+
+  $('nm').addEventListener('keydown', e => {
+    if ($('ta').hidden) return;
+    const n = taRows.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      taIndex = (taIndex + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+      [...$('ta').children].forEach((b, i) =>
+        b.setAttribute('aria-selected', i === taIndex ? 'true' : 'false'));
+    } else if (e.key === 'Enter' && taIndex >= 0) {
+      e.preventDefault(); pick(taIndex);
+    } else if (e.key === 'Escape') { closeTa(); }
+  });
+
+  $('ta').addEventListener('click', e => {
+    const b = e.target.closest('button[data-i]');
+    if (b) pick(+b.dataset.i);
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.field')) closeTa();
+  });
+
+  // --- submit --------------------------------------------------------------
+  $('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('err').hidden = true;
+    const btn = $('go');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> Sending…';
+    try {
+      const res = await JSL.post('/api/register', {
+        subevent: +$('ev').value,
+        name: $('nm').value,
+        phone: $('ph').value,
+        email: $('em').value
+      });
+      showDone(res);
+      $('form').reset(); chosen = null;
+      $('ev').value = res.subevent_id || $('ev').value;
+    } catch (err) {
+      $('err').textContent = err.message;
+      $('err').hidden = false;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Register and send pass';
+    }
+  });
+
+  function showDone(res) {
+    const d = res.delivery || {};
+    const chip = (label, r) => r
+      ? `<span class="chip ${r.ok ? 'ok' : 'bad'}">${r.ok ? '✓' : '✕'} ${label}${r.ok ? '' : ' — ' + JSL.esc(r.detail)}</span>`
+      : '';
+    const anyFail = Object.values(d).some(r => r && !r.ok);
+    const el = document.createElement('div');
+    el.className = 'note ' + (anyFail ? 'warn' : 'ok');
+    el.innerHTML = `<b>${JSL.esc(res.name)}</b> is registered for ${JSL.esc(res.event)}.
+      Reference <span class="ref">${JSL.esc(res.reference)}</span>.
+      <div class="chips">${chip('WhatsApp', d.whatsapp)}${chip('Email', d.email)}</div>
+      ${anyFail ? '<div class="hint warn" style="margin-top:8px">The registration stands. Only the message failed — quote the reference at the door, or re-send from the admin screen.</div>' : ''}`;
+    $('done').prepend(el);
+  }
+
+  // --- boot ----------------------------------------------------------------
+  (async function () {
+    try {
+      session = await JSL.get('/api/session');
+      const evs = await JSL.get('/api/events');
+      $('who').innerHTML = `<b>${JSL.esc(session.display_name)}</b>${JSL.esc(session.subject)}`;
+      const live = evs.filter(e => !e.past);
+      if (!live.length) {
+        $('boot').className = 'note warn';
+        $('boot').textContent = 'There is no upcoming event to register for.';
+        return;
+      }
+      $('ev').innerHTML = live.map(e =>
+        `<option value="${e.id}">${JSL.esc(e.name)} · ${JSL.esc(e.when)}</option>`).join('');
+      if (!session.channels.whatsapp) {
+        $('denom').innerHTML += ' <span style="color:var(--amber)">WhatsApp is not configured, so only email will go out.</span>';
+      }
+      $('boot').hidden = true;
+      $('form').hidden = false;
+      $('nm').focus();
+    } catch (e) {
+      $('boot').className = 'note bad';
+      $('boot').textContent = e.message;
+    }
+  })();
+})();
+</script>
+</body>
+</html>

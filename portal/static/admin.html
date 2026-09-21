@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Event dashboard — Jhaveri Securities</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">Jhaveri Securities</span>
+  <span class="who" id="who"></span>
+</header>
+
+<main class="main wide">
+  <div class="pagehead"><h1 id="title">Event dashboard</h1></div>
+  <p class="denom" id="denom"></p>
+
+  <div id="boot" class="note">Loading…</div>
+
+  <div id="body" hidden>
+    <div class="srow">
+      <div class="field">
+        <label for="ev">Event</label>
+        <select id="ev"></select>
+      </div>
+      <button class="btn ghost" id="refresh" type="button">Refresh</button>
+    </div>
+
+    <div class="figs" id="figs"></div>
+
+    <div class="card">
+      <h2 id="brokersHead">By broker</h2>
+      <div class="tblwrap">
+        <table>
+          <thead><tr>
+            <th>Broker</th><th class="r">Registered</th><th class="r">Attended</th>
+            <th class="r">No-show</th><th class="r">Turnout</th>
+          </tr></thead>
+          <tbody id="brokers"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="brokersEmpty" hidden>Nobody has registered yet.</div>
+    </div>
+
+    <div class="card">
+      <h2>Everyone registered</h2>
+      <div class="srow" style="margin-bottom:12px">
+        <div class="field">
+          <label for="q">Find a person</label>
+          <input type="text" id="q" placeholder="Name or reference" autocomplete="off">
+        </div>
+      </div>
+      <div class="tblwrap">
+        <table>
+          <thead><tr>
+            <th>Name</th><th>Reference</th><th>Broker</th><th>Mobile</th><th>At the door</th>
+          </tr></thead>
+          <tbody id="people"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="peopleEmpty" hidden>Nobody has registered yet.</div>
+    </div>
+  </div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  let data = null;
+
+  function figs(d) {
+    // Every figure takes a word as well as a number: a count alone does not
+    // say whether it is good news.
+    const cards = [
+      ['Registered', d.total, 'across all brokers', ''],
+      ['Said yes', d.rsvp.yes, `${d.rsvp.none} not yet answered`, ''],
+      ['Attended', d.attended, `of ${d.total} registered`, d.attended ? 'good' : ''],
+      ['No-show', d.no_show, d.total ? `${100 - d.rate}% of the room` : '—', d.no_show ? 'warn' : ''],
+      ['Turnout', d.rate + '%', d.total ? `${d.attended} of ${d.total}` : 'nobody yet',
+       d.rate >= 70 ? 'good' : d.rate >= 40 ? 'opp' : 'warn']
+    ];
+    $('figs').innerHTML = cards.map(([k, v, s, cls]) => `
+      <div class="fig"><div class="k">${k}</div>
+        <div class="v ${cls}">${JSL.esc(v)}</div>
+        <div class="s">${JSL.esc(s)}</div></div>`).join('');
+  }
+
+  function brokers(d) {
+    const max = Math.max(1, ...d.brokers.map(b => b.registered));
+    $('brokersEmpty').hidden = d.brokers.length > 0;
+    $('brokers').innerHTML = d.brokers.map(b => `
+      <tr>
+        <td>${JSL.esc(b.name)}${b.name !== b.broker ? ` <span class="sub">${JSL.esc(b.broker)}</span>` : ''}</td>
+        <td class="r num bar" style="--w:${JSL.pct(b.registered, max)}">${b.registered}</td>
+        <td class="r num">${b.attended}</td>
+        <td class="r num">${b.no_show}</td>
+        <td class="r num">${b.rate}%</td>
+      </tr>`).join('');
+  }
+
+  function people(d, filter) {
+    const f = (filter || '').trim().toLowerCase();
+    const rows = d.people.filter(p => !f ||
+      p.name.toLowerCase().includes(f) || (p.reference || '').toLowerCase().includes(f));
+    $('peopleEmpty').hidden = rows.length > 0;
+    $('peopleEmpty').textContent = d.people.length
+      ? 'Nobody matches that.' : 'Nobody has registered yet.';
+    // The glyph carries the state as well as the colour, so the column still
+    // reads for anyone who cannot tell the two greens apart.
+    $('people').innerHTML = rows.map(p => `
+      <tr>
+        <td>${JSL.esc(p.name)}</td>
+        <td class="num ref">${JSL.esc(p.reference || '—')}</td>
+        <td>${JSL.esc(p.broker)}</td>
+        <td class="num">${JSL.esc(p.phone || '—')}</td>
+        <td>${p.attended
+              ? '<span class="chip ok">✓ checked in</span>'
+              : '<span class="chip">· not yet</span>'}</td>
+      </tr>`).join('');
+  }
+
+  async function load() {
+    const id = +$('ev').value;
+    $('refresh').disabled = true;
+    try {
+      data = await JSL.get('/api/stats?subevent=' + id);
+      $('title').textContent = data.subevent.name;
+      $('denom').textContent = `${data.subevent.location} · registrations and turnout, live from the door.`;
+      figs(data); brokers(data); people(data, $('q').value);
+    } catch (e) {
+      $('boot').hidden = false;
+      $('boot').className = 'note bad';
+      $('boot').textContent = e.message;
+    } finally {
+      $('refresh').disabled = false;
+    }
+  }
+
+  $('ev').addEventListener('change', load);
+  $('refresh').addEventListener('click', load);
+  $('q').addEventListener('input', () => data && people(data, $('q').value));
+
+  (async function () {
+    try {
+      const s = await JSL.get('/api/session');
+      $('who').innerHTML = `<b>${JSL.esc(s.display_name)}</b>${JSL.esc(s.role)}`;
+      if (s.role === 'broker') $('brokersHead').textContent = 'Your registrations';
+      const evs = await JSL.get('/api/events');
+      if (!evs.length) {
+        $('boot').className = 'note warn';
+        $('boot').textContent = 'There are no events yet.';
+        return;
+      }
+      $('ev').innerHTML = evs.map(e =>
+        `<option value="${e.id}">${JSL.esc(e.name)} · ${JSL.esc(e.when)}</option>`).join('');
+      const next = evs.find(e => !e.past) || evs[0];
+      $('ev').value = next.id;
+      $('boot').hidden = true;
+      $('body').hidden = false;
+      await load();
+      // The door is the reason this screen is open; keep it current without
+      // anyone having to remember to press refresh.
+      setInterval(load, 30000);
+    } catch (e) {
+      $('boot').className = 'note bad';
+      $('boot').textContent = e.message;
+    }
+  })();
+})();
+</script>
+</body>
+</html>

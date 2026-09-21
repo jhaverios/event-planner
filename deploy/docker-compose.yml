@@ -39,6 +39,34 @@ services:
       retries: 10
     networks: [internal]
 
+  portal:
+    # The screens brokers, admins and door staff actually use. Everything a
+    # human waits on happens here; anything on a clock stays in n8n.
+    build: ../portal
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PRETIX_API_BASE: ${PRETIX_API_BASE:-http://pretix:80/api/v1}
+      PRETIX_HOST: ${PRETIX_HOST:-${PRETIX_DOMAIN}}
+      PRETIX_API_TOKEN: ${PRETIX_API_TOKEN:?set PRETIX_API_TOKEN}
+      PRETIX_ORGANIZER: ${PRETIX_ORGANIZER:-jsl}
+      PRETIX_EVENT: ${PRETIX_EVENT:-investor-events}
+      DIRECTORY_DSN: postgresql://directory:${DIRECTORY_DB_PASSWORD:?set DIRECTORY_DB_PASSWORD}@postgres:5432/directory
+      BROKER_LINK_SECRET: ${BROKER_LINK_SECRET:?set BROKER_LINK_SECRET}
+      WATI_API_BASE: ${WATI_API_BASE:-}
+      WATI_TOKEN: ${WATI_TOKEN:-}
+      WATI_TEMPLATE: ${WATI_TEMPLATE:-jsl_event_v3}
+      ZEPTO_API_KEY: ${ZEPTO_SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Jhaveri Securities}
+      PORTAL_BASE: ${PORTAL_BASE:-https://${PRETIX_DOMAIN}}
+      QR_BASE: ${QR_BASE:-https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data=}
+      TZ: ${TZ:-Asia/Kolkata}
+    ports:
+      - "127.0.0.1:${PORTAL_PORT:-8090}:8090"
+    networks: [internal]
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped

@@ -1,0 +1,190 @@
+/* JSL event portal.
+   Tokens, type scale and spacing are the broker lens from jhaveri-os, because
+   this is an operational tool used by brokers and staff rather than a client
+   surface. Nothing here invents a value that system already names. */
+
+:root {
+  color-scheme: light only;
+  --ground: #ffffff;
+  --panel: #f7f8f9;
+  --ink: #16212b;
+  --muted: #5b6b78;
+  --line: #e3e7ea;
+  --accent: #23408e;
+  --accent-soft: #eef1f9;
+  --pos: #2c6b41;
+  --neg: #ab4425;
+  --amber: #8a5d10;
+  --amber-soft: #fbf3df;
+  --grey-soft: #f1f3f4;
+  --pos-soft: #e7f0ea;
+  --red-soft: #f9ece7;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --measure: 66ch;
+
+  /* Six steps, and nothing between them. */
+  --t-hero: 2.0rem;
+  --t-xl: 1.45rem;
+  --t-lg: 1.05rem;
+  --t-md: 0.95rem;
+  --t-sm: 0.86rem;
+  --t-xs: 0.78rem;
+
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+
+  /* One elevation level. Two would already be one too many. */
+  --lift: 0 1px 2px rgba(22,33,43,.05), 0 4px 14px rgba(22,33,43,.05);
+
+  --tint-pos: #f0f7f2;
+  --tint-neg: #fdf1ed;
+  --tint-warn: #fdf7e8;
+
+  --gold: #a17c2b;
+  --gold-soft: #faf3e3;
+  --navy-deep: #16294d;
+
+  --display: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--panel); }
+body {
+  margin: 0; background: var(--panel); font-family: var(--display);
+  color: var(--ink); font-size: 14.5px; line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+.num { font-variant-numeric: tabular-nums; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* shell */
+.topbar {
+  display: flex; align-items: center; gap: 14px; padding: 0 18px; height: 52px;
+  position: sticky; top: 0; background: var(--navy-deep); z-index: 40; color: #fff;
+}
+.topbar .brand {
+  font-family: var(--display); font-weight: 600; font-size: 1.05rem;
+  letter-spacing: .01em; white-space: nowrap; color: #fff;
+}
+.topbar .who {
+  margin-left: auto; color: rgba(255,255,255,.62); font-size: 11.5px;
+  text-align: right; line-height: 1.35; white-space: nowrap;
+}
+.topbar .who b { color: #fff; font-size: 12.5px; display: block; font-weight: 600; }
+.main { padding: 0 18px 72px; max-width: 760px; margin: 0 auto; }
+.main.wide { max-width: 1180px; }
+
+.pagehead { display: flex; align-items: baseline; gap: 12px; margin: 20px 0 2px; flex-wrap: wrap; }
+.pagehead h1 { font-size: var(--t-xl); font-weight: 600; margin: 0; }
+.denom { color: var(--muted); font-size: 13px; margin: 0 0 18px; max-width: var(--measure); }
+
+/* cards */
+.card {
+  border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: var(--ground); padding: 18px; margin-bottom: 16px; box-shadow: var(--lift);
+}
+.card > h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 14px; font-weight: 600;
+}
+
+/* figures */
+.figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.fig { border: 1px solid var(--line); border-radius: var(--radius); background: var(--ground); padding: 11px 13px; }
+.fig .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.fig .v { font-size: 1.28rem; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.fig .s { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.fig .v.good { color: var(--pos); } .fig .v.warn { color: var(--neg); } .fig .v.opp { color: var(--amber); }
+
+/* form */
+label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--muted); margin: 0 0 5px; font-weight: 600; }
+.field { margin-bottom: 16px; position: relative; }
+input, select, textarea, button {
+  font-family: inherit; font-size: var(--t-md); color: var(--ink);
+}
+input[type=text], input[type=tel], input[type=email], select {
+  width: 100%; padding: 11px 12px; min-height: 44px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--ground);
+}
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+input[readonly] { background: var(--panel); color: var(--muted); }
+.hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.hint.warn { color: var(--amber); }
+
+/* typeahead */
+.ta { position: absolute; left: 0; right: 0; top: calc(100% + 3px); z-index: 20;
+      background: var(--ground); border: 1px solid var(--line); border-radius: var(--radius);
+      box-shadow: 0 2px 6px rgba(22,33,43,.10), 0 10px 28px rgba(22,33,43,.16);
+      overflow: hidden; }
+.ta[hidden] { display: none; }
+.ta button {
+  display: block; width: 100%; text-align: left; border: 0; background: none;
+  padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--panel); min-height: 44px;
+}
+.ta button:last-child { border-bottom: 0; }
+.ta button:hover, .ta button[aria-selected=true] { background: var(--accent-soft); }
+.ta .nm { font-size: var(--t-md); }
+.ta .dt { font-size: var(--t-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.ta .new { color: var(--accent); }
+
+/* buttons — gold marks the one thing worth pressing */
+.btn {
+  border: 1px solid var(--navy-deep); background: var(--navy-deep); color: #fff;
+  border-radius: var(--radius); padding: 12px 20px; min-height: 44px;
+  font-size: var(--t-md); font-weight: 600; cursor: pointer;
+}
+.btn:hover { background: #1d3460; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.ghost { background: var(--ground); color: var(--accent); border-color: var(--line); }
+.btn.gold { background: var(--gold); border-color: var(--gold); color: #fff; }
+
+/* result + status */
+.note { border-radius: var(--radius); padding: 12px 14px; font-size: var(--t-sm); margin-bottom: 14px;
+        border-left: 3px solid var(--line); background: var(--panel); }
+.note.ok   { background: var(--tint-pos); border-left-color: var(--pos); }
+.note.bad  { background: var(--tint-neg); border-left-color: var(--neg); }
+.note.warn { background: var(--tint-warn); border-left-color: var(--amber); }
+.note b { font-weight: 650; }
+
+.ref { font-variant-numeric: tabular-nums; font-weight: 650; letter-spacing: .06em; }
+
+/* channel chips — colour is never the only carrier, so each takes a glyph */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { border: 1px solid var(--line); border-radius: 20px; padding: 3px 11px;
+        font-size: 12px; background: var(--ground); display: inline-flex; gap: 5px; align-items: center; }
+.chip.ok  { background: var(--pos-soft); border-color: #cfe2d6; color: var(--pos); }
+.chip.bad { background: var(--red-soft); border-color: #eed3c9; color: var(--neg); }
+
+/* tables */
+.tblwrap { border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; background: var(--ground); }
+.tblwrap table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.tblwrap thead th {
+  background: var(--panel); text-align: left; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); padding: 9px 12px;
+  border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.tblwrap th.r, .tblwrap td.r { text-align: right; }
+.tblwrap td { padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tblwrap tbody tr:hover { background: var(--panel); }
+.tblwrap td .sub { color: var(--muted); font-size: 11px; }
+/* A thin rule under the figure, not a tinted band behind it: the number is
+   the content and a band fights it. */
+.tblwrap td.bar { position: relative; padding-bottom: 13px; }
+.tblwrap td.bar::after {
+  content: ''; position: absolute; right: 12px; bottom: 7px; height: 2px; border-radius: 1px;
+  width: calc(var(--w) * 1%); max-width: calc(100% - 24px); background: var(--accent); opacity: .34;
+}
+
+.empty { color: var(--muted); font-size: var(--t-sm); padding: 18px 0; text-align: center; }
+.spin { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255,255,255,.4);
+        border-top-color: #fff; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -2px; }
+@keyframes sp { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+.srow { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 16px; }
+.srow .field { margin-bottom: 0; flex: 1 1 220px; }
+
+/* A transformed field must not shout its own placeholder. */
+input::placeholder { text-transform: none; letter-spacing: normal; font-size: var(--t-md); }
