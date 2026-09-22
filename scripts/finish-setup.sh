@@ -66,10 +66,37 @@ COUNT=$(curl -s --max-time 10 -H "Authorization: Token $TOKEN" -H "Host: $HOST" 
         "$API/organizers/$ORG/events/" | sed -n 's/.*"count":\([0-9]*\).*/\1/p')
 echo "events currently in pretix: ${COUNT:-unknown}"
 
-PRETIX_API_BASE="$API" PRETIX_HOST="$HOST" PRETIX_API_TOKEN="$TOKEN" \
-PRETIX_ORGANIZER="$ORG" PRETIX_EVENT="$EV" \
-DIRECTORY_DSN="postgresql://directory:${DIRECTORY_DB_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5434}/directory" \
-  python3 "$ROOT/scripts/bootstrap-event.py" || die "event setup failed"
+EVOUT=$(PRETIX_API_BASE="$API" PRETIX_HOST="$HOST" PRETIX_API_TOKEN="$TOKEN" \
+        PRETIX_ORGANIZER="$ORG" PRETIX_EVENT="$EV" \
+        DIRECTORY_DSN="postgresql://directory:${DIRECTORY_DB_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5434}/directory" \
+        python3 "$ROOT/scripts/bootstrap-event.py") || die "event setup failed"
+echo "$EVOUT" | grep -vE '^(SPEAKER|NOTE|RSVP)'
+
+SUBEVENT=$(echo "$EVOUT" | sed -n 's/^SUBEVENT_ID=//p' | tail -1)
+
+# psycopg2 is not installed on a bare host, so bootstrap-event.py cannot store
+# the speaker itself. It prints the values instead and they go in here, through
+# the database container, which needs nothing installed on the host at all.
+if echo "$EVOUT" | grep -q '^SPEAKER=' && [ -n "$SUBEVENT" ]; then
+  say "Storing the invitation details"
+  v() { echo "$EVOUT" | sed -n "s/^$1=//p" | tail -1 | sed "s/'/''/g"; }
+  if docker compose "${FILES[@]}" exec -T postgres psql -U "${POSTGRES_SUPERUSER:-postgres}" \
+    -d directory -v ON_ERROR_STOP=1 -q <<SQL
+INSERT INTO event_details (subevent_id, speaker, speaker_title, speaker_org,
+                           note, rsvp_name, rsvp_phone)
+VALUES ($SUBEVENT, '$(v SPEAKER)', '$(v SPEAKER_TITLE)', '$(v SPEAKER_ORG)',
+        '$(v NOTE)', '$(v RSVP_NAME)', '$(v RSVP_PHONE)')
+ON CONFLICT (subevent_id) DO UPDATE SET
+  speaker = EXCLUDED.speaker, speaker_title = EXCLUDED.speaker_title,
+  speaker_org = EXCLUDED.speaker_org, note = EXCLUDED.note,
+  rsvp_name = EXCLUDED.rsvp_name, rsvp_phone = EXCLUDED.rsvp_phone;
+SQL
+  then
+    echo "speaker recorded for subevent $SUBEVENT: $(v SPEAKER), $(v SPEAKER_ORG)"
+  else
+    warn "could not store the speaker; the deploy is fine, set it later with scripts/set-event-details.py"
+  fi
+fi
 
 say "Restarting the portal"
 docker compose "${FILES[@]}" up -d --build portal
