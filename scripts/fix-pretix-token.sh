@@ -39,8 +39,11 @@ TOKEN_LINE=$(echo "$OUT" | grep -E '^PRETIX_API_TOKEN=' | tail -1)
 TOKEN=${TOKEN_LINE#PRETIX_API_TOKEN=}
 CODE=$(curl -s -o /dev/null -w '%{http_code}' \
        -H "Authorization: Token $TOKEN" -H "Host: ${PRETIX_HOST:-$PRETIX_DOMAIN}" \
-       "http://127.0.0.1:${PRETIX_PORT:-8345}/api/v1/organizers/${PRETIX_ORGANIZER:-jsl}/events/${PRETIX_EVENT:-investor-events}/subevents/" || true)
-echo "==> That token reading subevents: HTTP $CODE"
+       "http://127.0.0.1:${PRETIX_PORT:-8345}/api/v1/organizers/${PRETIX_ORGANIZER:-jsl}/events/" || true)
+# Listing an organizer's events proves the token and nothing else. Asking for a
+# SPECIFIC event conflates "bad token" with "event not created yet" — pretix
+# answers 403 for an event that does not exist, and that cost an hour.
+echo "==> That token listing events: HTTP $CODE"
 if [ "$CODE" != 200 ]; then
   echo "Still not 200. Not writing it; the old value is untouched." >&2
   echo "Teams and their permissions:" >&2
