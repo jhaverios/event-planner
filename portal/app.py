@@ -364,10 +364,11 @@ def overview(request: Request, authorization: str = Header(None)):
     who = _need(_identity(request, authorization), "admin")
     ident = {v: k for k, v in pretix.questions().items()}
     details = db.all_event_details()
+    dead = pretix.order_status()
     cards = []
     for ev in pretix.subevents():
         rows = [p for p in pretix.positions(subevent_id=ev["id"])
-                if not p.get("canceled")]
+                if not p.get("canceled") and dead.get(p.get("order")) not in ("c", "e")]
         sent = db.deliveries_for(ev["id"])
         attended = sum(1 for p in rows if p.get("checkins"))
         brokers = set()
@@ -403,13 +404,16 @@ def stats(request: Request, subevent: int = Query(...),
     ident = {v: k for k, v in pretix.questions().items()}
     rows = pretix.positions(subevent_id=subevent)
     sent = db.deliveries_for(subevent)
+    dead = pretix.order_status()
 
     scope = who["subject"] if who["role"] == "broker" else None
     per, total, attended, rsvp = {}, 0, 0, {"yes": 0, "no": 0, "none": 0}
     people = []
 
     for p in rows:
-        if p.get("canceled"):
+        # Cancelled and expired orders are gone: their pass will not scan, so
+        # counting them would report a turnout nobody can reconcile.
+        if p.get("canceled") or dead.get(p.get("order")) in ("c", "e"):
             continue
         answers = {ident.get(a["question"]): a["answer"] for a in p.get("answers", [])}
         code = answers.get("broker_code") or "—"

@@ -97,7 +97,34 @@ def cancel_order(code):
     """
     with _client() as c:
         r = c.post(f"/orders/{code}/mark_canceled/", json={})
-        return r.status_code < 400
+        if r.status_code >= 400:
+            return False
+        # Read the order back rather than trusting the status code. A 200 that
+        # did not actually cancel anything is exactly the sort of thing that
+        # only shows up as a wrong headcount on the night.
+        g = c.get(f"/orders/{code}/")
+        return g.status_code < 400 and g.json().get("status") == "c"
+
+
+def order_status():
+    """{order_code: status} — n pending, p paid, e expired, c canceled.
+
+    The position serializer's own cancellation flag is not the thing that
+    changes when an order is cancelled: pretix marks the order and leaves the
+    positions in place, so /orderpositions/ keeps returning a cancelled
+    registration looking perfectly live. Filtering on the order's status is
+    unambiguous, and at a couple of hundred orders it is one extra call.
+    """
+    out, url, params = {}, "/orders/", {"page_size": 200}
+    with _client() as c:
+        while url:
+            r = c.get(url, params=params)
+            r.raise_for_status()
+            d = r.json()
+            for o in d["results"]:
+                out[o["code"]] = o.get("status")
+            url, params = d.get("next"), None
+    return out
 
 
 def positions(subevent_id=None):

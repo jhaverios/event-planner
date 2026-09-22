@@ -361,6 +361,16 @@ if reference and not a.keep:
         record("cleanup: test order cancelled", PASS if cancelled else FAIL,
                reference if cancelled
                else f"{reference} is still live — cancel it before the event · {why}")
+        # Cancelling is only half of it. A cancelled order whose position keeps
+        # coming back from pretix still counts towards turnout, which is how a
+        # 200 from the cancel endpoint hid a registration that never left.
+        if cancelled and subevent:
+            again = priv.get(f"/api/stats?subevent={subevent}", headers=H(admin))
+            if again.status_code == 200:
+                left = [x["reference"] for x in again.json()["people"]]
+                check("cleanup: it disappears from the dashboard too",
+                      reference not in left,
+                      f"{reference} still counted among {len(left)}")
     except Exception as e:
         record("cleanup: test order", FAIL,
                f"{reference} is still live — cancel it before the event ({e})")
