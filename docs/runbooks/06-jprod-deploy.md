@@ -179,3 +179,46 @@ cd ~/event-planner/deploy && sudo docker compose down
 sudo rm /etc/nginx/sites-enabled/event-planner
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+---
+
+## Proving it works
+
+`scripts/smoke-test.py` tests a deployment against the thing people actually use. Two modes,
+because one of them sends real messages to a real phone.
+
+**Safe to run at any time**, sends nothing:
+
+```bash
+cd ~/event-planner && set -a && . deploy/.env && set +a
+python3 scripts/smoke-test.py --base https://events.jslwealth.in --quick
+```
+
+Checks health (including that the pretix token actually authenticates, not merely that it is
+set), every auth boundary, the event list, all six inputs the form must reject, and the door's
+behaviour on a reference that does not exist.
+
+**The full path**, which registers a real client and sends to a phone and address you own:
+
+```bash
+python3 scripts/smoke-test.py --base https://events.jslwealth.in \
+    --phone 9833693876 --email you@example.com --broker SMOKE01
+```
+
+Adds: registration accepted, the speaker present in the line the client is actually sent, both
+channels accepted, the door admitting the guest once and refusing the same pass twice, the
+numbers reaching the dashboard attributed to the right broker, another broker being unable to
+see that registration, and the test order cancelled afterwards so it does not inflate turnout.
+
+37 checks. A single failure exits non-zero and is listed again at the end.
+
+### Two bugs it found on its first run
+
+**`cancel_order` used the wrong URL.** `POST /orders/{code}/cancel/` returns 404; the endpoint
+is `mark_canceled` — American spelling, one L. `/mark_cancelled/` and `/delete/` are also 404.
+This mattered beyond the test: clearing test registrations before an event is exactly what that
+function is for, and it would have failed quietly.
+
+**The registration reply did not say what had been sent.** It returned the bare event name while
+the client received the name plus the speaker, so nothing in the response could be checked
+against what actually went out. It now returns `event_line` as well.

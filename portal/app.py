@@ -259,6 +259,9 @@ def register(body: Registration, request: Request, authorization: str = Header(N
 
     ev = pretix.subevent(body.subevent)
     details = db.event_details(body.subevent)
+    # What the client will actually read, speaker included. Returned as well as
+    # the bare name so the reply can be checked against what went out.
+    sent_as = event_line(ev["name"], details)
     order = pretix.create_order(name=name, phone=f"+91{phone}" if phone else "",
                                 email=email, broker_code=broker_code,
                                 subevent_id=body.subevent)
@@ -268,7 +271,7 @@ def register(body: Registration, request: Request, authorization: str = Header(N
     if phone:
         ok, detail = wati.send_pass(
             phone=f"91{phone}", name=name,
-            event=event_line(ev["name"], details),
+            event=sent_as,
             when=when_text(ev["date_from"]), venue=ev["location"],
             reference=order["code"], qr_url=qr)
         delivery["whatsapp"] = {"ok": ok, "detail": detail}
@@ -283,6 +286,7 @@ def register(body: Registration, request: Request, authorization: str = Header(N
         db.remember_client(broker_code, name, phone, email)
 
     return {"reference": order["code"], "name": name, "event": ev["name"],
+            "event_line": sent_as,
             "when": when_text(ev["date_from"]), "broker_code": broker_code,
             "phone": phone or "", "email": email or "", "delivery": delivery}
 

@@ -89,8 +89,14 @@ def create_order(*, name, phone, email, broker_code, subevent_id, item_id=1):
 
 
 def cancel_order(code):
+    """Cancel an order, so test registrations do not inflate the turnout.
+
+    The endpoint is mark_canceled, American spelling and one L. /cancel/,
+    /mark_cancelled/ and /delete/ all return 404, which made this look like a
+    permissions problem rather than a wrong URL.
+    """
     with _client() as c:
-        r = c.post(f"/orders/{code}/cancel/", json={})
+        r = c.post(f"/orders/{code}/mark_canceled/", json={})
         return r.status_code < 400
 
 
