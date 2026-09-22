@@ -264,9 +264,19 @@ organizer-level object. So it is a click-through, once per station:
 2. **Organizer `jsl` → Devices → Add device.**
 3. Name it for the gate — "Entrance 1", "Entrance 2". The name is stamped on every check-in, so
    afterwards you can tell which door admitted whom.
-4. Limit it to the event and its check-in list. A device scoped to one event cannot be walked to
-   another one.
-5. Save. Pretix shows a pairing code. Install pretixSCAN from the Play Store, enter the code
+4. **Limit to events** → tick `JSL Investor Events`. A device scoped to one event cannot be
+   walked to another one. Leave **Gate** blank; gates are for venues where several physical
+   entrances feed one list.
+5. **Security profile — choose plain `pretixSCAN`.** There are four, and only one is right:
+
+   | Option | Verdict |
+   |---|---|
+   | Full device access | reads *and changes* orders and gift cards. A door scanner has no business doing either, and a lost phone should not carry that |
+   | **pretixSCAN** | **this one.** Syncs the guest list to the device, so it keeps admitting people when the venue wifi dies, and allows search for the guest whose QR will not read |
+   | pretixSCAN (online only, no order sync) | every scan needs live connectivity. At a hotel, with two hundred people arriving at once, this is the setting that strands the door |
+   | pretixSCAN (kiosk mode, no order sync, no search) | no search, so there is no answer for a smudged printout or a deleted WhatsApp. That case is exactly why a human is standing there |
+
+6. Save. Pretix shows a pairing code. Install pretixSCAN from the Play Store, enter the code
    once, and the phone syncs.
 
 **Two stations for 200 guests.** Not for throughput — a single phone handles 200 scans easily —
@@ -299,3 +309,56 @@ sent" count stops counting a message to a guest who no longer exists.
 
 Use it for test registrations and for a broker who typed the wrong client. It cannot be undone
 from the dashboard — re-register the person instead, which sends them a fresh pass.
+
+
+## The day-before reminder
+
+`jsl_event_v3` says *"your registration is confirmed"*, which is the wrong sentence on the 23rd.
+`jsl_event_reminder_v1` says *"we look forward to seeing you tomorrow"* and carries the same six
+parameters, so `wati.send_pass` takes a template name rather than a second sender existing.
+
+It runs inside the portal container, where the credentials and the dependencies already are —
+the same reason `bootstrap-pretix.py` runs inside pretix:
+
+```bash
+cd ~/event-planner/deploy
+
+# who WOULD get it, and why anyone is being skipped. Sends nothing.
+sudo docker compose exec -T portal python - --subevent 2 < ~/event-planner/scripts/send-reminders.py
+
+# prove it on one person first
+sudo docker compose exec -T portal python - --subevent 2 --limit 1 --send < ~/event-planner/scripts/send-reminders.py
+
+# then the rest
+sudo docker compose exec -T portal python - --subevent 2 --send < ~/event-planner/scripts/send-reminders.py
+```
+
+Dry run is the default. The flag that messages two hundred people is the one you have to type.
+
+### Sending twice is the failure that matters
+
+So it is guarded three ways, and the third is the one worth understanding:
+
+1. the run skips anyone already recorded as sent
+2. a partial unique index refuses a second successful row, so two overlapping runs cannot both
+   pass the check above and both write
+3. **if the "who was already sent" read fails, the run aborts.** Returning an empty set would
+   have meant "nobody has been reminded" and messaged the entire list a second time. A failure
+   to read is not the same as nothing to read, and treating them alike is how a mailing list
+   sends twice
+
+Failures stay retryable: only successful sends are unique, so re-running picks up whoever the
+first pass could not reach.
+
+### Who gets skipped, and why
+
+- cancelled or expired orders, read from the order's status rather than the position's flag
+- anyone with no mobile number on their registration
+- a WATI contact with `allowBroadcast` off, or deleted. Looked up per number through
+  `getContacts?name=<phone>`, which matches the phone as well as the saved name — confirmed
+  against a contact stored as "Jeet Jhaveri" and found by number alone. There are sixteen
+  thousand contacts on the account, so this has to be a lookup, never a scan
+
+A lookup that *fails* is treated as allowed rather than blocked: a WATI hiccup must not silently
+withhold a reminder someone is expecting. The send is the real gate — WATI answers 200 with
+`result: false` when it refuses.
