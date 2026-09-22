@@ -222,3 +222,80 @@ function is for, and it would have failed quietly.
 **The registration reply did not say what had been sent.** It returned the bare event name while
 the client received the name plus the speaker, so nothing in the response could be checked
 against what actually went out. It now returns `event_line` as well.
+
+### A third, found running it against the live site
+
+The test signed its single HTTP client in as an administrator before asserting how the site
+treats a stranger. Both anonymous checks failed — on the cookie the test was carrying, not on
+anything the server did. A test that authenticates itself and then asks "is this closed to the
+public?" cannot answer the question.
+
+Now `c` is anonymous for its whole life, privileged calls go through a second client, and the
+password block runs on a throwaway — which means signing out is really asserted rather than
+skipped whenever a password was supplied.
+
+Cancelling could not work remotely either. The pretix client on the machine running the test
+talks to a *different* pretix than the one under test, so cleanup either failed or would have
+cancelled an unrelated order that happened to share a five-character code. It cancels through
+the server being tested now, which is what `/api/admin/cancel` is for.
+
+## The door on the day
+
+Two ways in, and the second one exists because venue wifi is not a thing to bet on.
+
+### pretixSCAN on Android — the primary
+
+The app syncs the whole guest list while it has signal, then **scans offline**. Check-ins queue
+on the phone and upload when signal returns, so a dead wifi router slows the dashboard, not the
+queue.
+
+Pairing is the one action our API token cannot do — pretix returns 403, because a device is an
+organizer-level object. So it is a click-through, once per station:
+
+1. `https://tickets.jslwealth.in/control/login` — the credentials are on jprod, and the file is
+   root-owned because the deploy ran as root:
+
+   ```bash
+   sudo grep PRETIX_ADMIN ~/event-planner/deploy/.env
+   ```
+
+   The password is generated fresh by `deploy-jprod.sh` on each machine, so a copy from anywhere
+   else is the wrong one.
+2. **Organizer `jsl` → Devices → Add device.**
+3. Name it for the gate — "Entrance 1", "Entrance 2". The name is stamped on every check-in, so
+   afterwards you can tell which door admitted whom.
+4. Limit it to the event and its check-in list. A device scoped to one event cannot be walked to
+   another one.
+5. Save. Pretix shows a pairing code. Install pretixSCAN from the Play Store, enter the code
+   once, and the phone syncs.
+
+**Two stations for 200 guests.** Not for throughput — a single phone handles 200 scans easily —
+but so that one flat battery or one frozen app does not stop the entrance.
+
+pretixSCAN is an Android app. Whether pretix ships an official iOS scanner is **not something I
+have confirmed**; if the door staff are on iPhones, use the web console below, which works in
+Safari.
+
+### `/door` — the backup, and the typed-reference path
+
+A signed link, deliberately short-lived:
+
+```bash
+python3 portal/issue-link.py door entrance-1 --days 7
+```
+
+It does two jobs pretixSCAN does not do as well: it runs on any phone with a browser, and it
+takes a **typed five-character reference** when a QR will not read — a cracked screen, a
+printout that smudged, a client who deleted the WhatsApp. Same check-in list, same rules: a pass
+already used comes back `already_redeemed`.
+
+It needs signal. That is the trade, and it is why it is the backup rather than the primary.
+
+### Undoing a registration
+
+`/admin` → the event → **Remove** on the person's row, behind a confirm. It cancels the order in
+pretix, so the pass stops working at the door, and drops the delivery record so the "WhatsApp
+sent" count stops counting a message to a guest who no longer exists.
+
+Use it for test registrations and for a broker who typed the wrong client. It cannot be undone
+from the dashboard — re-register the person instead, which sends them a fresh pass.
