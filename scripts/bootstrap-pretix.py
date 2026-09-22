@@ -80,17 +80,22 @@ with transaction.atomic():
     org, org_new = Organizer.objects.get_or_create(
         slug=ORG_SLUG, defaults={"name": ORG_NAME})
 
-    admins, _ = Team.objects.get_or_create(
-        organizer=org, name="Admins",
-        defaults={"all_events": True, "all_event_permissions": True,
-                  "all_organizer_permissions": True})
+    # Case-insensitive, because get_or_create(name="Automation") happily made
+    # a SECOND team next to an existing "automation" on jprod, and the token
+    # in .env stayed on the old one with the narrower permissions. A duplicate
+    # team is worse than no team: everything looks configured and nothing works.
+    def team(name):
+        t = Team.objects.filter(organizer=org, name__iexact=name).first()
+        return t or Team.objects.create(organizer=org, name=name)
+
+    admins = team("Admins")
     admins.all_events = True
     admins.all_event_permissions = True
     admins.all_organizer_permissions = True
     admins.save()
     admins.members.add(user)
 
-    automation, _ = Team.objects.get_or_create(organizer=org, name="Automation")
+    automation = team("Automation")
     automation.all_events = True
     automation.all_event_permissions = False
     automation.limit_event_permissions = AUTOMATION_EVENT
@@ -98,7 +103,7 @@ with transaction.atomic():
     automation.limit_organizer_permissions = AUTOMATION_ORG
     automation.save()
 
-    door, _ = Team.objects.get_or_create(organizer=org, name="Door staff")
+    door = team("Door staff")
     door.all_events = True
     door.all_event_permissions = False
     door.limit_event_permissions = DOOR_EVENT
@@ -107,6 +112,7 @@ with transaction.atomic():
     door.save()
 
     token = TeamAPIToken.objects.filter(team=automation, active=True).first()
+    # Report the team's real name so a mismatch with .env is visible.
     if token is None:
         token = TeamAPIToken.objects.create(
             team=automation, name="portal", active=True,
@@ -118,5 +124,6 @@ print(f"admin email     : {EMAIL}")
 print(f"admin password  : {out['admin_password']}")
 print(f"admin is new    : {created_user}")
 print(f"organizer       : {org.slug} ({'created' if org_new else 'existing'})")
-print("teams           : Admins, Automation, Door staff")
+print(f"teams           : {admins.name}, {automation.name}, {door.name}")
+print(f"token is on     : team {automation.name!r}, token {token.name!r}")
 print(f"PRETIX_API_TOKEN={token.token}", file=sys.stdout)
