@@ -10,7 +10,11 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT=$(pwd)
 DEPLOY=deploy
+# Absolute, because the script changes directory into $DEPLOY partway through
+# and a relative path silently becomes deploy/deploy/.env after that.
+ENVFILE="$ROOT/$DEPLOY/.env"
 
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 warn() { printf '\033[33m!! %s\033[0m\n' "$1"; }
@@ -30,7 +34,7 @@ docker info >/dev/null 2>&1 || die "Cannot talk to the Docker daemon. Are you ro
 echo "docker $(docker --version | awk '{print $3}' | tr -d ,), compose $(docker compose version --short)"
 
 # --- Configuration -------------------------------------------------------
-if [ ! -f "$DEPLOY/.env" ]; then
+if [ ! -f "$ENVFILE" ]; then
   say "First run: collecting configuration"
   # Two names because the portal and pretix both answer on /api and cannot
   # share a hostname. n8n gets no name at all: it holds every API credential
@@ -49,7 +53,7 @@ if [ ! -f "$DEPLOY/.env" ]; then
 
   gen() { openssl rand -hex "${1:-16}"; }
   PRETIX_DB_PASSWORD=$(gen 16)
-  cat > "$DEPLOY/.env" <<EOF
+  cat > "$ENVFILE" <<EOF
 PRETIX_DOMAIN=$PRETIX_DOMAIN
 PORTAL_DOMAIN=$PORTAL_DOMAIN
 PORTAL_BASE=https://$PORTAL_DOMAIN
@@ -67,13 +71,19 @@ TZ=Asia/Kolkata
 PRETIX_CRON_INTERVAL=900
 BROKER_LINK_SECRET=$(gen 32)
 DIRECTORY_DB_PASSWORD=$(gen 24)
+PRETIX_ADMIN_EMAIL=${PRETIX_ADMIN_EMAIL:-admin@$PRETIX_DOMAIN}
+PRETIX_ADMIN_PASSWORD=$(gen 12)
+PRETIX_ORGANIZER=${PRETIX_ORGANIZER:-jsl}
+PRETIX_EVENT=${PRETIX_EVENT:-investor-events}
+PRETIX_HOST=$PRETIX_DOMAIN
+PRETIX_API_BASE=http://pretix:80/api/v1
 # 5433 is already taken on this host by another stack's postgres.
 POSTGRES_PORT=5434
 PORTAL_PORT=8090
 WATI_TEMPLATE=jsl_event_v3
-QR_BASE=https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data=
+QR_BASE='https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data='
 EOF
-  chmod 600 "$DEPLOY/.env"
+  chmod 600 "$ENVFILE"
 
   sed -e "s|^url=.*|url=https://$PRETIX_DOMAIN|" \
       -e "s|^password=CHANGEME|password=$PRETIX_DB_PASSWORD|" \
@@ -88,12 +98,16 @@ EOF
   # silently falls back to built-in defaults, so mail stops working and the
   # database settings are ignored, with nothing in the log to say why.
   # Give the file to that uid so it stays secret AND readable.
-  PRETIX_UID=$(docker compose "${FILES[@]:-}" run --rm --no-deps --entrypoint id pretix -u 2>/dev/null | tr -d '\r\n')
+  # On a first deploy the image is not pulled yet, so this lookup fails. With
+  # set -e a failing command substitution takes the whole script down mid-way
+  # through writing the configuration, which is how this failed the first time
+  # it was run against an empty machine. Fall back to the known uid instead.
+  PRETIX_UID=$(docker compose "${FILES[@]:-}" run --rm --no-deps --entrypoint id pretix -u 2>/dev/null | tr -d '\r\n' || true)
   PRETIX_UID=${PRETIX_UID:-15371}
   chown "$PRETIX_UID" "$DEPLOY/pretix/pretix.cfg" 2>/dev/null || \
     warn "could not chown pretix.cfg to uid $PRETIX_UID; pretix may ignore it"
   chmod 600 "$DEPLOY/pretix/pretix.cfg"
-  echo "wrote $DEPLOY/.env (0600 root) and $DEPLOY/pretix/pretix.cfg (0600, uid $PRETIX_UID)"
+  echo "wrote $ENVFILE (0600 root) and $DEPLOY/pretix/pretix.cfg (0600, uid $PRETIX_UID)"
 else
   say "Existing configuration found; leaving .env and pretix.cfg untouched"
 fi
@@ -105,7 +119,7 @@ fi
 # the intended path, not a workaround.
 top_up() { # top_up KEY "prompt" [optional]
   local k=$1 prompt=$2 optional=${3:-}
-  if grep -qE "^$k=.+" "$DEPLOY/.env"; then return; fi
+  if grep -qE "^$k=.+" "$ENVFILE"; then return; fi
   local val="${!k:-}"
   if [ -z "$val" ] && [ -t 0 ]; then
     read -r -p "$prompt${optional:+ (blank to skip)}: " val || true
@@ -114,8 +128,8 @@ top_up() { # top_up KEY "prompt" [optional]
     [ -n "$optional" ] && { warn "$k left unset; the portal will report it as missing"; return; }
     die "$k is required"
   fi
-  sed -i "/^$k=/d" "$DEPLOY/.env"
-  printf '%s=%s\n' "$k" "$val" >> "$DEPLOY/.env"
+  sed -i "/^$k=/d" "$ENVFILE"
+  printf '%s=%s\n' "$k" "$val" >> "$ENVFILE"
   echo "recorded $k"
 }
 say "Checking the portal's configuration"
@@ -125,7 +139,7 @@ top_up WATI_TOKEN       "WATI API token" optional
 top_up ZEPTO_SMTP_PASS  "ZeptoMail send-mail token" optional
 top_up MAIL_FROM        "From address for the pass emails" optional
 # shellcheck disable=SC1091
-set -a; . "$DEPLOY/.env"; set +a
+set -a; . "$ENVFILE"; set +a
 
 # --- Pick the compose files ---------------------------------------------
 FILES=(-f docker-compose.yml)
@@ -160,7 +174,7 @@ fi
 
 say "Starting the stack"
 cd "$DEPLOY"
-docker compose "${FILES[@]}" "${PROFILE[@]}" up -d
+docker compose "${FILES[@]}" "${PROFILE[@]}" up -d --build
 
 say "Broker and client directory"
 # Idempotent: creating the database, the role and the schema can all be re-run.
@@ -207,6 +221,49 @@ for i in $(seq 1 60); do
   sleep 5
 done
 
+# --- Set pretix up without anyone clicking through its admin ------------
+# The portal needs an API token, and a token normally means four trips through
+# the pretix UI. That would make this deploy wait on a person. These two do the
+# same work, and both are idempotent, so a re-run is safe.
+# A token inherited from the environment can be a stale one from an earlier
+# install. Prove it authenticates before trusting it; otherwise bootstrap.
+TOKEN_OK=no
+if grep -qE '^PRETIX_API_TOKEN=.+' "$ENVFILE"; then
+  set -a; . "$ENVFILE"; set +a
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Token $PRETIX_API_TOKEN" \
+         -H "Host: $PRETIX_DOMAIN" "http://127.0.0.1:8345/api/v1/organizers/" || true)
+  if [ "$code" = 200 ]; then TOKEN_OK=yes; else
+    warn "the stored pretix token returns HTTP $code; replacing it"
+    sed -i '/^PRETIX_API_TOKEN=/d' "$ENVFILE"
+  fi
+fi
+if [ "$TOKEN_OK" != yes ]; then
+  say "Setting pretix up"
+  TOKEN_LINE=$(docker compose "${FILES[@]}" exec -T \
+      -e PRETIX_ADMIN_EMAIL="$PRETIX_ADMIN_EMAIL" \
+      -e PRETIX_ADMIN_PASSWORD="$PRETIX_ADMIN_PASSWORD" \
+      -e PRETIX_ORGANIZER="$PRETIX_ORGANIZER" \
+      pretix python - < "$ROOT/scripts/bootstrap-pretix.py" | tee /dev/stderr \
+      | grep -E '^PRETIX_API_TOKEN=' | tail -1)
+  [ -n "$TOKEN_LINE" ] || die "could not create a pretix API token"
+  sed -i '/^PRETIX_API_TOKEN=/d' "$ENVFILE"
+  printf '%s\n' "$TOKEN_LINE" >> "$ENVFILE"
+  set -a; . "$ENVFILE"; set +a
+  echo "recorded PRETIX_API_TOKEN"
+
+  say "Creating the event series and the first event date"
+  PRETIX_API_BASE="http://127.0.0.1:8345/api/v1" \
+  PRETIX_HOST="$PRETIX_DOMAIN" \
+  PRETIX_API_TOKEN="$PRETIX_API_TOKEN" \
+  PRETIX_ORGANIZER="$PRETIX_ORGANIZER" \
+  PRETIX_EVENT="$PRETIX_EVENT" \
+  DIRECTORY_DSN="postgresql://directory:${DIRECTORY_DB_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5434}/directory" \
+    python3 "$ROOT/scripts/bootstrap-event.py" || die "event setup failed"
+
+  say "Restarting the portal with its token"
+  docker compose "${FILES[@]}" "${PROFILE[@]}" up -d --build portal
+fi
+
 say "Waiting for the portal"
 for i in $(seq 1 30); do
   body=$(curl -s --max-time 5 "http://127.0.0.1:${PORTAL_PORT:-8090}/healthz" || true)
@@ -230,9 +287,7 @@ Mint the links people actually use:
                   python3 portal/issue-link.py admin nimish     --days 90
                   python3 portal/issue-link.py door  entrance-1 --days 7
 
-Create the first admin user (interactive, asks for email and password):
-  cd $(pwd) && docker compose ${FILES[*]} exec pretix pretix createsuperuser
-
-Then follow docs/runbooks/04-pretix-setup.md to create the organizer,
-the event series, the registration questions and the check-in list.
+The pretix admin user, organizer, teams, API token, event series, questions,
+quota and check-in list were all created by this script. The admin sign-in is
+PRETIX_ADMIN_EMAIL / PRETIX_ADMIN_PASSWORD in $ENVFILE.
 EOF

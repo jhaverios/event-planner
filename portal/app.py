@@ -132,16 +132,31 @@ def healthz():
     created until pretix itself has been set up. Reporting that as "degraded"
     with the reason beats refusing to start with a stack trace.
     """
+    # Asking whether the token is SET is not the same as asking whether it
+    # WORKS. A stale token from an earlier install passes the first test and
+    # fails every real request, and a deploy script that waits on this would
+    # declare success over a broken portal. So call pretix.
+    pretix_ok, pretix_why = False, "no token configured"
+    if config.PRETIX_TOKEN:
+        try:
+            pretix.subevents()
+            pretix_ok, pretix_why = True, "ok"
+        except Exception as e:
+            pretix_why = f"{type(e).__name__}: {str(e)[:120]}"
+
     checks = {
-        "pretix_token": bool(config.PRETIX_TOKEN),
+        "pretix": pretix_ok,
         "directory": db.available(),
         "whatsapp": wati.configured(),
         "email": mailer.configured(),
         "link_secret": bool(auth.SECRET),
     }
     missing = [k for k, v in checks.items() if not v]
-    return {"status": "ok" if not missing else "degraded",
-            "checks": checks, "missing": missing}
+    out = {"status": "ok" if not missing else "degraded",
+           "checks": checks, "missing": missing}
+    if not pretix_ok:
+        out["pretix_error"] = pretix_why
+    return out
 
 
 @app.get("/api/session")

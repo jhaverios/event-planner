@@ -66,16 +66,37 @@ def search_clients(broker_code, q, limit=8):
 
 def remember_client(broker_code, name, phone, email):
     """A client typed in freehand joins the book, so the next registration
-    finds them. Never overwrites a known contact detail with a blank."""
-    if not available() or not name:
+    finds them. Never overwrites a known contact detail with a blank.
+
+    Two things this must not do, both learned by breaking them:
+
+    A broker code typed at the desk may be one the directory has never seen —
+    on a fresh install the brokers table is empty until the CSV lands. The
+    broker row is created rather than the insert failing on a foreign key.
+
+    And it must never raise. By the time this runs the pretix order exists and
+    the client already has their pass in hand; turning that into a 500 tells
+    the broker the registration failed when it plainly did not. Bookkeeping
+    losing a row is a smaller problem than a broker registering someone twice.
+    """
+    if not available() or not name or not broker_code:
         return
-    with _cur() as c:
-        c.execute(
-            """INSERT INTO clients (broker_code, name, phone, email)
-               VALUES (%s, %s, %s, %s)
-               ON CONFLICT (broker_code, lower(name), coalesce(phone, ''))
-               DO UPDATE SET email = COALESCE(EXCLUDED.email, clients.email)""",
-            (broker_code, name, phone or None, email or None))
+    try:
+        with _cur() as c:
+            c.execute(
+                """INSERT INTO brokers (broker_code, name)
+                   VALUES (%s, %s) ON CONFLICT (broker_code) DO NOTHING""",
+                (broker_code, broker_code))
+            c.execute(
+                """INSERT INTO clients (broker_code, name, phone, email)
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (broker_code, lower(name), coalesce(phone, ''))
+                   DO UPDATE SET email = COALESCE(EXCLUDED.email, clients.email)""",
+                (broker_code, name, phone or None, email or None))
+    except Exception as e:
+        # Deliberately swallowed. See above.
+        print(f"directory: could not remember {name!r} for {broker_code}: "
+              f"{type(e).__name__}: {e}", flush=True)
 
 
 def broker_names(codes):
