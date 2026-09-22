@@ -160,9 +160,11 @@ def healthz():
         except Exception as e:
             pretix_why = f"{type(e).__name__}: {str(e)[:120]}"
 
+    # Connecting is not the same as being usable, for a database either.
+    gaps = db.missing_tables()
     checks = {
         "pretix": pretix_ok,
-        "directory": db.available(),
+        "directory": db.available() and not gaps,
         "whatsapp": wati.configured(),
         "email": mailer.configured(),
         "link_secret": bool(auth.SECRET),
@@ -172,6 +174,9 @@ def healthz():
            "checks": checks, "missing": missing}
     if not pretix_ok:
         out["pretix_error"] = pretix_why
+    if gaps and db.available():
+        out["directory_error"] = ("tables missing: " + ", ".join(gaps)
+                                  + " — re-apply deploy/postgres/directory-schema.sql")
     return out
 
 

@@ -25,6 +25,36 @@ def available():
     return _pool is not None
 
 
+# Every table the portal writes to. Kept here rather than inferred, so a table
+# added to the schema file but never created on a running machine is caught.
+EXPECTED_TABLES = ("brokers", "clients", "import_batches", "event_details",
+                   "deliveries")
+
+
+def missing_tables():
+    """Which expected tables are not actually there.
+
+    available() says only that a connection pool exists. A directory database
+    created before a table was added answers every query against it with an
+    error — and the callers here deliberately swallow errors, because losing a
+    bookkeeping row must never fail a registration that already succeeded. The
+    result is a registration that works, a message that goes out, and an admin
+    page that says "no record" forever, with /healthz reporting the directory
+    as fine throughout. Exactly the lie the pretix check used to tell by
+    asking whether a token was SET rather than whether it WORKED.
+    """
+    if not available():
+        return list(EXPECTED_TABLES)
+    try:
+        with _cur() as c:
+            c.execute("SELECT table_name FROM information_schema.tables "
+                      "WHERE table_schema = 'public'")
+            have = {r["table_name"] for r in c.fetchall()}
+        return [t for t in EXPECTED_TABLES if t not in have]
+    except Exception as ex:
+        return [f"unreadable ({type(ex).__name__})"]
+
+
 @contextlib.contextmanager
 def _cur():
     conn = _pool.getconn()

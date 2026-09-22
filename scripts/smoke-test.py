@@ -78,14 +78,14 @@ def fresh():
 
 desk, admin, door = a.desk_token, a.admin_token, a.door_token
 USE_SESSION = False
-s = c  # the client privileged calls go through
+priv = c  # the client privileged calls go through
 if a.admin_password:
     # A SECOND client, deliberately. Signing `c` in would have carried the
     # admin cookie into the anonymous-visitor assertions, which would then
     # have passed on a cookie rather than on the server's behaviour. They
     # failed honestly instead, which is how this was found.
-    s = fresh()
-    rr = s.post("/api/admin/login", json={"password": a.admin_password})
+    priv = fresh()
+    rr = priv.post("/api/admin/login", json={"password": a.admin_password})
     if rr.status_code != 200:
         sys.exit(f"admin sign-in failed: {rr.status_code} {rr.text[:200]}")
     USE_SESSION = True
@@ -123,6 +123,10 @@ for k in ("pretix", "directory", "link_secret"):
 for k in ("whatsapp", "email"):
     record(f"health: {k}", PASS if h.get("checks", {}).get(k) else SKIP,
            "" if h.get("checks", {}).get(k) else "not configured")
+# A database that connects but lacks a table looks healthy and loses every
+# write to it, silently, because those writes must never fail a registration.
+check("health: the directory has every table it writes to",
+      not h.get("directory_error"), h.get("directory_error", ""))
 
 # --- 2. the auth boundaries ---------------------------------------------
 # The registration desk is deliberately public: the domain IS the form. What
@@ -241,7 +245,7 @@ if subevent:
 # than a test looking at the wrong door.
 LIST_ID = 1
 try:
-    lists = s.get("/api/checkinlists", headers=H(door))
+    lists = priv.get("/api/checkinlists", headers=H(door))
     if lists.status_code == 200:
         rows = lists.json()
         match = [l for l in rows if l.get("subevent") == subevent]
@@ -251,7 +255,7 @@ try:
 except Exception as e:
     record("door: finding the check-in list", SKIP, str(e)[:60])
 
-rr = s.post("/api/checkin", headers=H(door), json={"code": "ZZZZZ", "list_id": LIST_ID})
+rr = priv.post("/api/checkin", headers=H(door), json={"code": "ZZZZZ", "list_id": LIST_ID})
 check("door: an unknown reference is refused, not crashed",
       rr.status_code == 200 and rr.json().get("reason") == "not_found",
       f"HTTP {rr.status_code} · {rr.json() if rr.status_code == 200 else ''}")
@@ -294,17 +298,17 @@ else:
             time.sleep(10)
 
         # --- the door, for real ---
-        r1 = s.post("/api/checkin", headers=H(door),
+        r1 = priv.post("/api/checkin", headers=H(door),
                     json={"code": reference, "list_id": LIST_ID}).json()
         check("door: admits the guest", r1.get("status") == "ok",
               f"{r1.get('status')} · {r1.get('reason') or ''}")
-        r2 = s.post("/api/checkin", headers=H(door),
+        r2 = priv.post("/api/checkin", headers=H(door),
                     json={"code": reference, "list_id": LIST_ID}).json()
         check("door: refuses the same pass twice",
               r2.get("reason") == "already_redeemed", str(r2.get("reason")))
 
         # --- the dashboard ---
-        st = s.get(f"/api/stats?subevent={subevent}", headers=H(admin))
+        st = priv.get(f"/api/stats?subevent={subevent}", headers=H(admin))
         ok = check("dashboard: loads", st.status_code == 200, f"HTTP {st.status_code}")
         if ok:
             s = st.json()
@@ -329,7 +333,7 @@ else:
                 raise RuntimeError("remote host")
             import auth as _auth
             other = _auth.issue("broker", "SMOKE-OTHER", 1)
-            os_ = s.get(f"/api/stats?subevent={subevent}", headers=H(other))
+            os_ = priv.get(f"/api/stats?subevent={subevent}", headers=H(other))
             if os_.status_code == 200:
                 codes = {b["broker"] for b in os_.json()["brokers"]}
                 check("privacy: another broker cannot see this registration",
@@ -346,7 +350,7 @@ if reference and not a.keep:
             # Through the server being tested. The pretix client on THIS
             # machine talks to a different pretix, so cancelling locally would
             # either fail or cancel someone else's order of the same code.
-            rr = s.post("/api/admin/cancel", json={"code": reference})
+            rr = priv.post("/api/admin/cancel", json={"code": reference})
             cancelled = rr.status_code == 200
             why = "" if cancelled else f"HTTP {rr.status_code} {rr.text[:80]}"
         else:
