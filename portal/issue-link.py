@@ -27,5 +27,8 @@ a = ap.parse_args()
 if not auth.SECRET:
     sys.exit("BROKER_LINK_SECRET is not set")
 
-path = {"broker": "/r", "admin": "/admin", "door": "/door"}[a.role]
+# Must cover every role in auth.ROLES, and match the map in app.py's root().
+# "desk" is the shared registration-desk link and lands on the same page as a
+# broker link; the form then asks which broker code is using it.
+path = {"desk": "/r", "broker": "/r", "admin": "/admin", "door": "/door"}[a.role]
 print(f"{a.base}{path}?t={auth.issue(a.role, a.subject, a.days)}")

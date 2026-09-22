@@ -108,6 +108,24 @@ check("auth: a door link cannot register anyone",
       c.post("/api/register", headers=H(door),
              json={"subevent": 1, "name": "x", "phone": "9833693876"}).status_code == 403)
 
+# --- 2b. every role can actually have a link minted ----------------------
+# issue-link.py keeps its own role-to-path map, separate from auth.ROLES.
+# When "desk" was added to one and not the other, the command used to mint the
+# broker link raised KeyError — and nothing here caught it, because the tests
+# mint tokens through auth.issue directly.
+try:
+    import subprocess
+    link_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "portal", "issue-link.py")
+    for role in ("desk", "broker", "admin", "door"):
+        rr = subprocess.run([sys.executable, link_script, role, "smoke", "--days", "1"],
+                            capture_output=True, text=True, timeout=30)
+        check(f"links: a {role} link can be minted",
+              rr.returncode == 0 and "?t=" in rr.stdout,
+              (rr.stderr.strip().splitlines() or [""])[-1][:70])
+except Exception as e:
+    record("links: minting", SKIP, str(e)[:60])
+
 # --- 3. the event list ---------------------------------------------------
 r = c.get("/api/events", headers=H(desk))
 ok = check("events: the list loads", r.status_code == 200, f"HTTP {r.status_code}")
