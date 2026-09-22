@@ -141,6 +141,33 @@ top_up MAIL_FROM        "From address for the pass emails" optional
 # shellcheck disable=SC1091
 set -a; . "$ENVFILE"; set +a
 
+# --- Keys an older .env predates ----------------------------------------
+# .env is written once, on the first run, and preserved on every run after.
+# So every key added to this script SINCE a given machine's first deploy is
+# missing on that machine — silently, with no error anywhere. It has bitten
+# twice on jprod: ADMIN_PASSWORD, so the admin page could not be signed into,
+# and PRETIX_ADMIN_*, so nobody could log in to pretix to pair a door scanner.
+#
+# Backfill what can be derived or safely invented. Say plainly what cannot.
+rnd() { openssl rand -hex "${1:-16}"; }
+backfill() { # backfill KEY VALUE
+  grep -qE "^$1=.+" "$ENVFILE" && return 0
+  sed -i "/^$1=/d" "$ENVFILE"
+  printf '%s=%s\n' "$1" "$2" >> "$ENVFILE"
+  echo "backfilled $1"
+}
+backfill PRETIX_ADMIN_EMAIL "admin@${PRETIX_DOMAIN:-localhost}"
+# Safe to invent: the portal reads it at startup and nothing else knows it.
+backfill ADMIN_PASSWORD "$(rnd 8)"
+# NOT safe to invent: it belongs to a user that already exists inside pretix,
+# so writing a fresh value here would leave the file confidently wrong.
+if ! grep -qE '^PRETIX_ADMIN_PASSWORD=.+' "$ENVFILE"; then
+  warn "PRETIX_ADMIN_PASSWORD is missing and cannot be guessed — it belongs to a
+       user inside pretix. Reset it with:  sudo scripts/reset-pretix-admin.sh"
+fi
+# shellcheck disable=SC1091
+set -a; . "$ENVFILE"; set +a
+
 # --- Pick the compose files ---------------------------------------------
 FILES=(-f docker-compose.yml)
 if [ ! -e /proc/net/if_inet6 ]; then
