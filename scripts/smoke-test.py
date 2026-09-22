@@ -368,9 +368,10 @@ if reference and not a.keep:
             again = priv.get(f"/api/stats?subevent={subevent}", headers=H(admin))
             if again.status_code == 200:
                 left = [x["reference"] for x in again.json()["people"]]
-                check("cleanup: it disappears from the dashboard too",
-                      reference not in left,
-                      f"{reference} still counted among {len(left)}")
+                gone = reference not in left
+                check("cleanup: it disappears from the dashboard too", gone,
+                      f"{len(left)} registration(s) remain" if gone
+                      else f"{reference} is STILL counted among {len(left)}")
     except Exception as e:
         record("cleanup: test order", FAIL,
                f"{reference} is still live — cancel it before the event ({e})")
