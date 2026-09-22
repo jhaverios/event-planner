@@ -91,7 +91,7 @@
         <table>
           <thead><tr>
             <th>Client</th><th>Invited by</th><th>Reference</th>
-            <th>WhatsApp</th><th>Email</th><th>At the door</th>
+            <th>WhatsApp</th><th>Email</th><th>At the door</th><th></th>
           </tr></thead>
           <tbody id="people"></tbody>
         </table>
@@ -238,8 +238,31 @@
         <td>${p.attended
               ? '<span class="chip ok">✓ checked in</span>'
               : '<span class="chip">· not yet</span>'}</td>
+        <td class="r">${p.reference
+              ? `<button class="linkbtn" data-cancel="${JSL.esc(p.reference)}"
+                      data-who="${JSL.esc(p.name)}">Remove</button>`
+              : ''}</td>
       </tr>`).join('');
   }
+
+  // Undoing a registration: a test one, or a broker who typed the wrong
+  // client. Two-step on purpose — the row disappears from the door list too,
+  // so a mis-click would turn someone away at the entrance.
+  $('people').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-cancel]');
+    if (!b) return;
+    const ref = b.dataset.cancel;
+    if (!confirm(`Remove ${b.dataset.who} (${ref})?\n\n`
+                 + `Their pass stops working at the door. This cannot be undone here.`)) return;
+    b.disabled = true; b.textContent = 'Removing…';
+    try {
+      await JSL.post('/api/admin/cancel', { code: ref });
+      await showEvent(current);
+    } catch (err) {
+      b.disabled = false; b.textContent = 'Remove';
+      alert(err.message || 'Could not remove that registration.');
+    }
+  });
 
   $('q').addEventListener('input', () => data && people(data, $('q').value));
 

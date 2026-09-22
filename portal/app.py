@@ -491,6 +491,28 @@ def lists(request: Request, authorization: str = Header(None)):
             for l in pretix.checkin_lists()]
 
 
+class Cancel(BaseModel):
+    code: str = ""
+
+
+@app.post("/api/admin/cancel")
+def admin_cancel(body: Cancel, request: Request, authorization: str = Header(None)):
+    """Undo a registration — a test one, or a broker's mistake.
+
+    The only write the dashboard can make, and admin-only. Without it the fix
+    for a wrong registration is a trip through pretix's own admin, which is not
+    a thing anyone at JSL should have to learn on the day.
+    """
+    _need(_identity(request, authorization), "admin")
+    code = (body.code or "").strip().upper()
+    if not code:
+        raise HTTPException(400, "Give the reference to cancel")
+    if not pretix.cancel_order(code):
+        raise HTTPException(400, f"{code} could not be cancelled — look it up in pretix")
+    db.forget_delivery(code)
+    return {"cancelled": code}
+
+
 @app.exception_handler(HTTPException)
 def _http_error(request: Request, exc: HTTPException):
     return JSONResponse({"error": exc.detail}, status_code=exc.status_code)

@@ -54,6 +54,10 @@ ap.add_argument("--name", default="Smoke Test")
 ap.add_argument("--desk-token")
 ap.add_argument("--admin-token")
 ap.add_argument("--door-token")
+ap.add_argument("--admin-password",
+                help="sign in the way an administrator actually does, instead of "
+                     "minting tokens. Needed against a remote host, whose link "
+                     "signing secret is not the one on this machine.")
 ap.add_argument("--cacert", help="CA bundle, if behind a TLS-inspecting proxy")
 ap.add_argument("--keep", action="store_true", help="do not cancel the test order")
 a = ap.parse_args()
@@ -63,8 +67,30 @@ c = httpx.Client(base_url=a.base.rstrip("/"), timeout=45.0, verify=verify,
                  follow_redirects=True)
 
 # --- tokens --------------------------------------------------------------
+# Against a remote host the link signing secret here is not the one there, so
+# locally minted tokens are rejected. Signing in with the admin password is
+# both the way a person really does it and the only way that works remotely;
+# /api/checkin accepts an admin as well as a door link.
+def fresh():
+    return httpx.Client(base_url=a.base.rstrip("/"), timeout=45.0, verify=verify,
+                        follow_redirects=True)
+
+
 desk, admin, door = a.desk_token, a.admin_token, a.door_token
-if not all((desk, admin, door)):
+USE_SESSION = False
+s = c  # the client privileged calls go through
+if a.admin_password:
+    # A SECOND client, deliberately. Signing `c` in would have carried the
+    # admin cookie into the anonymous-visitor assertions, which would then
+    # have passed on a cookie rather than on the server's behaviour. They
+    # failed honestly instead, which is how this was found.
+    s = fresh()
+    rr = s.post("/api/admin/login", json={"password": a.admin_password})
+    if rr.status_code != 200:
+        sys.exit(f"admin sign-in failed: {rr.status_code} {rr.text[:200]}")
+    USE_SESSION = True
+    desk = admin = door = None
+elif not all((desk, admin, door)):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "portal"))
     try:
         import auth
@@ -76,7 +102,9 @@ if not all((desk, admin, door)):
     except ImportError:
         sys.exit("cannot mint tokens here; pass --desk-token/--admin-token/--door-token")
 
-H = lambda t: {"Authorization": f"Bearer {t}"}          # noqa: E731
+def H(t):
+    """Bearer header, or nothing when the session cookie is doing the work."""
+    return {"Authorization": f"Bearer {t}"} if t else {}
 
 print(f"\nTesting {a.base}\n" + "=" * 60)
 
@@ -108,15 +136,17 @@ check("public: a visitor can list events", c.get("/api/events").status_code == 2
 
 check("closed: admin data refuses an anonymous visitor",
       c.get("/api/overview").status_code == 401)
-check("closed: admin data refuses a desk link",
-      c.get("/api/overview", headers=H(desk)).status_code == 403)
-check("closed: the door refuses an anonymous visitor",
-      c.post("/api/checkin", json={"code": "XXXXX", "list_id": 1}).status_code == 401)
-check("closed: a desk link cannot open the door console",
-      c.post("/api/checkin", headers=H(desk), json={"code": "XXXXX", "list_id": 1}).status_code == 403)
-check("closed: a door link cannot register anyone",
-      c.post("/api/register", headers=H(door),
-             json={"subevent": 1, "name": "x", "phone": "9833693876"}).status_code == 403)
+if not USE_SESSION:
+    check("closed: admin data refuses a desk link",
+          c.get("/api/overview", headers=H(desk)).status_code == 403)
+if not USE_SESSION:
+    check("closed: the door refuses an anonymous visitor",
+          c.post("/api/checkin", json={"code": "XXXXX", "list_id": 1}).status_code == 401)
+    check("closed: a desk link cannot open the door console",
+          c.post("/api/checkin", headers=H(desk), json={"code": "XXXXX", "list_id": 1}).status_code == 403)
+    check("closed: a door link cannot register anyone",
+          c.post("/api/register", headers=H(door),
+                 json={"subevent": 1, "name": "x", "phone": "9833693876"}).status_code == 403)
 check("closed: a tampered signature is refused",
       c.get("/api/overview", headers=H("admin.x.9999999999." + "A" * 32)).status_code == 401)
 check("closed: an expired admin link is refused",
@@ -126,22 +156,24 @@ check("closed: an expired admin link is refused",
 rr = c.post("/api/admin/login", json={"password": "definitely-not-the-password"})
 check("admin: a wrong password is refused", rr.status_code == 401,
       f"HTTP {rr.status_code}")
-adminpw = os.environ.get("ADMIN_PASSWORD", "")
+adminpw = a.admin_password or os.environ.get("ADMIN_PASSWORD", "")
 if adminpw:
-    rr = c.post("/api/admin/login", json={"password": adminpw})
+    t = fresh()
+    rr = t.post("/api/admin/login", json={"password": adminpw})
     ok = check("admin: the right password signs in", rr.status_code == 200,
                f"HTTP {rr.status_code}")
     if ok:
+        ovr = t.get("/api/overview")
         check("admin: the session cookie opens the dashboard",
-              c.get("/api/overview").status_code == 200)
-        ovr = c.get("/api/overview")
+              ovr.status_code == 200)
         if ovr.status_code == 200:
             evs_ = ovr.json().get("events", [])
             check("admin: every event appears as a card", bool(evs_),
                   f"{len(evs_)} card(s)")
-        c.post("/api/admin/logout")
+        t.post("/api/admin/logout")
         check("admin: signing out closes it again",
-              c.get("/api/overview").status_code == 401)
+              t.get("/api/overview").status_code == 401)
+    t.close()
 else:
     record("admin: password sign-in", SKIP, "ADMIN_PASSWORD not set here")
 
@@ -151,6 +183,8 @@ else:
 # broker link raised KeyError — and nothing here caught it, because the tests
 # mint tokens through auth.issue directly.
 try:
+    if USE_SESSION:
+        raise RuntimeError("remote host; the link secret here is not the one there")
     import subprocess
     link_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "..", "portal", "issue-link.py")
@@ -207,7 +241,7 @@ if subevent:
 # than a test looking at the wrong door.
 LIST_ID = 1
 try:
-    lists = c.get("/api/checkinlists", headers=H(door))
+    lists = s.get("/api/checkinlists", headers=H(door))
     if lists.status_code == 200:
         rows = lists.json()
         match = [l for l in rows if l.get("subevent") == subevent]
@@ -217,7 +251,7 @@ try:
 except Exception as e:
     record("door: finding the check-in list", SKIP, str(e)[:60])
 
-rr = c.post("/api/checkin", headers=H(door), json={"code": "ZZZZZ", "list_id": LIST_ID})
+rr = s.post("/api/checkin", headers=H(door), json={"code": "ZZZZZ", "list_id": LIST_ID})
 check("door: an unknown reference is refused, not crashed",
       rr.status_code == 200 and rr.json().get("reason") == "not_found",
       f"HTTP {rr.status_code} · {rr.json() if rr.status_code == 200 else ''}")
@@ -260,17 +294,17 @@ else:
             time.sleep(10)
 
         # --- the door, for real ---
-        r1 = c.post("/api/checkin", headers=H(door),
+        r1 = s.post("/api/checkin", headers=H(door),
                     json={"code": reference, "list_id": LIST_ID}).json()
         check("door: admits the guest", r1.get("status") == "ok",
               f"{r1.get('status')} · {r1.get('reason') or ''}")
-        r2 = c.post("/api/checkin", headers=H(door),
+        r2 = s.post("/api/checkin", headers=H(door),
                     json={"code": reference, "list_id": LIST_ID}).json()
         check("door: refuses the same pass twice",
               r2.get("reason") == "already_redeemed", str(r2.get("reason")))
 
         # --- the dashboard ---
-        st = c.get(f"/api/stats?subevent={subevent}", headers=H(admin))
+        st = s.get(f"/api/stats?subevent={subevent}", headers=H(admin))
         ok = check("dashboard: loads", st.status_code == 200, f"HTTP {st.status_code}")
         if ok:
             s = st.json()
@@ -291,9 +325,11 @@ else:
 
         # --- a broker sees only their own ---
         try:
+            if USE_SESSION:
+                raise RuntimeError("remote host")
             import auth as _auth
             other = _auth.issue("broker", "SMOKE-OTHER", 1)
-            os_ = c.get(f"/api/stats?subevent={subevent}", headers=H(other))
+            os_ = s.get(f"/api/stats?subevent={subevent}", headers=H(other))
             if os_.status_code == 200:
                 codes = {b["broker"] for b in os_.json()["brokers"]}
                 check("privacy: another broker cannot see this registration",
@@ -306,12 +342,21 @@ else:
 # --- 7. clean up ---------------------------------------------------------
 if reference and not a.keep:
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "portal"))
-        import pretix
-        cancelled = pretix.cancel_order(reference)
+        if USE_SESSION:
+            # Through the server being tested. The pretix client on THIS
+            # machine talks to a different pretix, so cancelling locally would
+            # either fail or cancel someone else's order of the same code.
+            rr = s.post("/api/admin/cancel", json={"code": reference})
+            cancelled = rr.status_code == 200
+            why = "" if cancelled else f"HTTP {rr.status_code} {rr.text[:80]}"
+        else:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "portal"))
+            import pretix
+            cancelled = pretix.cancel_order(reference)
+            why = ""
         record("cleanup: test order cancelled", PASS if cancelled else FAIL,
                reference if cancelled
-               else f"{reference} is still live — cancel it before the event")
+               else f"{reference} is still live — cancel it before the event · {why}")
     except Exception as e:
         record("cleanup: test order", FAIL,
                f"{reference} is still live — cancel it before the event ({e})")

@@ -204,6 +204,27 @@ def record_delivery(order_code, *, subevent_id, broker_code, name, phone,
               f"{type(ex).__name__}: {ex}", flush=True)
 
 
+def forget_delivery(order_code):
+    """Drop the bookkeeping row for a cancelled registration.
+
+    The counters on the admin cards read "WhatsApp sent" straight off this
+    table while "registered" is counted from pretix, which excludes cancelled
+    orders. Leaving the row behind would mean a cancelled test invite kept
+    being counted as a message sent to a guest who no longer exists.
+
+    Never raises, for the same reason record_delivery does not: the order is
+    already cancelled in pretix by the time this runs.
+    """
+    if not available() or not order_code:
+        return
+    try:
+        with _cur() as c:
+            c.execute("DELETE FROM deliveries WHERE order_code = %s", (order_code,))
+    except Exception as ex:
+        print(f"deliveries: could not forget {order_code}: "
+              f"{type(ex).__name__}: {ex}", flush=True)
+
+
 def deliveries_for(subevent_id):
     """{order_code: row} for one event, so the admin can join it onto pretix."""
     if not available():

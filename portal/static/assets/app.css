@@ -188,3 +188,13 @@ input[readonly] { background: var(--panel); color: var(--muted); }
 
 /* A transformed field must not shout its own placeholder. */
 input::placeholder { text-transform: none; letter-spacing: normal; font-size: var(--t-md); }
+
+/* A destructive action that must not look like the primary one: quiet until
+   hovered, and it turns the colour of the thing it is about to do. */
+.linkbtn {
+  background: none; border: 0; padding: 2px 4px; cursor: pointer;
+  font: inherit; font-size: .82rem; color: var(--muted);
+  border-radius: 4px; opacity: .75;
+}
+.linkbtn:hover:not(:disabled) { color: var(--neg); opacity: 1; background: rgba(0,0,0,.04); }
+.linkbtn:disabled { cursor: default; opacity: .5; }
