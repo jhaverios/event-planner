@@ -3,8 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Event dashboard — Jhaveri Securities</title>
+<title>Events — Jhaveri Securities</title>
 <link rel="stylesheet" href="/assets/app.css">
+<style>
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; }
+  .evcard {
+    border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--ground);
+    padding: 18px; box-shadow: var(--lift); cursor: pointer; text-align: left; width: 100%;
+    font: inherit; color: inherit; display: block;
+  }
+  .evcard:hover { border-color: var(--accent); }
+  .evcard h3 { margin: 0 0 4px; font-size: var(--t-lg); font-weight: 650; }
+  .evcard .meta { color: var(--muted); font-size: 12.5px; margin-bottom: 2px; }
+  .evcard .spk { color: var(--gold); font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
+  .evcard .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+                  border-top: 1px solid var(--line); padding-top: 12px; }
+  .evcard .n { font-size: 1.28rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .evcard .l { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .evcard .past { opacity: .6; }
+  .back { border: 0; background: none; color: var(--accent); cursor: pointer;
+          font: inherit; padding: 0; margin: 18px 0 0; }
+  .login { max-width: 360px; margin: 60px auto; }
+</style>
 </head>
 <body>
 <header class="topbar">
@@ -13,53 +33,70 @@
 </header>
 
 <main class="main wide">
-  <div class="pagehead"><h1 id="title">Event dashboard</h1></div>
-  <p class="denom" id="denom"></p>
-
   <div id="boot" class="note">Loading…</div>
 
-  <div id="body" hidden>
-    <div class="srow">
+  <!-- sign in -->
+  <div id="login" class="login" hidden>
+    <div class="pagehead"><h1>Sign in</h1></div>
+    <p class="denom">The events dashboard.</p>
+    <form class="card" id="loginForm">
       <div class="field">
-        <label for="ev">Event</label>
-        <select id="ev"></select>
+        <label for="pw">Password</label>
+        <input type="password" id="pw" autocomplete="current-password" required>
       </div>
-      <button class="btn ghost" id="refresh" type="button">Refresh</button>
-    </div>
+      <button class="btn" type="submit" style="width:100%">Sign in</button>
+      <div class="hint" id="loginErr" style="color:var(--neg);margin-top:10px" hidden></div>
+    </form>
+  </div>
+
+  <!-- the list of events -->
+  <div id="list" hidden>
+    <div class="pagehead"><h1>Events</h1></div>
+    <p class="denom">Every event, and how each one is going. Open one for the detail.</p>
+    <div class="cards" id="cards"></div>
+    <div class="empty" id="noEvents" hidden>No events yet.</div>
+  </div>
+
+  <!-- one event -->
+  <div id="detail" hidden>
+    <button class="back" id="back">← All events</button>
+    <div class="pagehead"><h1 id="dTitle"></h1></div>
+    <p class="denom" id="dSub"></p>
 
     <div class="figs" id="figs"></div>
 
     <div class="card">
-      <h2 id="brokersHead">By broker</h2>
+      <h2>By broker</h2>
       <div class="tblwrap">
         <table>
           <thead><tr>
-            <th>Broker</th><th class="r">Registered</th><th class="r">Attended</th>
-            <th class="r">No-show</th><th class="r">Turnout</th>
+            <th>Broker</th><th class="r">Invited</th><th class="r">Attended</th>
+            <th class="r">No-show</th><th class="r">Failed</th><th class="r">Turnout</th>
           </tr></thead>
           <tbody id="brokers"></tbody>
         </table>
       </div>
-      <div class="empty" id="brokersEmpty" hidden>Nobody has registered yet.</div>
+      <div class="empty" id="brokersEmpty" hidden>Nobody has been invited yet.</div>
     </div>
 
     <div class="card">
-      <h2>Everyone registered</h2>
+      <h2>Every invite</h2>
       <div class="srow" style="margin-bottom:12px">
         <div class="field">
           <label for="q">Find a person</label>
-          <input type="text" id="q" placeholder="Name or reference" autocomplete="off">
+          <input type="text" id="q" placeholder="Name, reference or broker code" autocomplete="off">
         </div>
       </div>
       <div class="tblwrap">
         <table>
           <thead><tr>
-            <th>Name</th><th>Reference</th><th>Broker</th><th>Mobile</th><th>At the door</th>
+            <th>Client</th><th>Invited by</th><th>Reference</th>
+            <th>WhatsApp</th><th>Email</th><th>At the door</th>
           </tr></thead>
           <tbody id="people"></tbody>
         </table>
       </div>
-      <div class="empty" id="peopleEmpty" hidden>Nobody has registered yet.</div>
+      <div class="empty" id="peopleEmpty" hidden>Nobody has been invited yet.</div>
     </div>
   </div>
 </main>
@@ -68,18 +105,91 @@
 <script>
 (function () {
   const $ = id => document.getElementById(id);
-  let data = null;
+  let events = [], data = null, current = null, timer = null;
+
+  // --- sign in -----------------------------------------------------------
+  $('loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('loginErr').hidden = true;
+    try {
+      await JSL.post('/api/admin/login', { password: $('pw').value });
+      $('pw').value = '';
+      $('login').hidden = true;
+      await showList();
+    } catch (err) {
+      $('loginErr').textContent = err.message;
+      $('loginErr').hidden = false;
+    }
+  });
+
+  // --- the cards ---------------------------------------------------------
+  async function showList() {
+    clearInterval(timer);
+    const d = await JSL.get('/api/overview');
+    events = d.events;
+    $('who').innerHTML = `<b>${JSL.esc(d.admin)}</b>${events.length} event${events.length === 1 ? '' : 's'}`;
+    $('noEvents').hidden = events.length > 0;
+    // Three numbers per card, because a card with everything on it is a table.
+    $('cards').innerHTML = events.map(e => `
+      <button class="evcard${e.past ? ' past' : ''}" data-id="${e.id}">
+        <h3>${JSL.esc(e.name)}</h3>
+        <div class="meta">${JSL.esc(e.when)}${e.past ? ' · finished' : ''}</div>
+        <div class="meta">${JSL.esc(e.location || '')}</div>
+        <div class="spk">${e.speaker ? JSL.esc(e.speaker + (e.speaker_org ? ' · ' + e.speaker_org : '')) : '&nbsp;'}</div>
+        <div class="nums">
+          <div><div class="n">${e.registered}</div><div class="l">Invited</div></div>
+          <div><div class="n">${e.attended}</div><div class="l">Turned up</div></div>
+          <div><div class="n${e.whatsapp_failed || e.email_failed ? ' ' : ''}"
+                    style="${e.whatsapp_failed || e.email_failed ? 'color:var(--neg)' : ''}">${
+                    e.whatsapp_failed + e.email_failed}</div><div class="l">Failed</div></div>
+        </div>
+      </button>`).join('');
+    $('list').hidden = false;
+    $('detail').hidden = true;
+    $('boot').hidden = true;
+  }
+
+  $('cards').addEventListener('click', e => {
+    const b = e.target.closest('.evcard');
+    if (b) showEvent(+b.dataset.id);
+  });
+  $('back').addEventListener('click', () => { current = null; showList(); });
+
+  // --- one event ---------------------------------------------------------
+  async function showEvent(id) {
+    current = id;
+    const ev = events.find(e => e.id === id) || {};
+    $('dTitle').textContent = ev.name || '';
+    const credit = [ev.speaker_title, ev.speaker_org].filter(Boolean).join(', ');
+    $('dSub').textContent = [
+      ev.when, ev.location,
+      ev.speaker ? ev.speaker + (credit ? ' — ' + credit : '') : 'no speaker recorded'
+    ].filter(Boolean).join(' · ');
+    $('list').hidden = true;
+    $('detail').hidden = false;
+    await load();
+    clearInterval(timer);
+    // The door is why this screen is open on the night; keep it current.
+    timer = setInterval(load, 30000);
+  }
+
+  async function load() {
+    if (!current) return;
+    data = await JSL.get('/api/stats?subevent=' + current);
+    figs(data); brokers(data); people(data, $('q').value);
+  }
 
   function figs(d) {
-    // Every figure takes a word as well as a number: a count alone does not
-    // say whether it is good news.
     const cards = [
-      ['Registered', d.total, 'across all brokers', ''],
-      ['Said yes', d.rsvp.yes, `${d.rsvp.none} not yet answered`, ''],
-      ['Attended', d.attended, `of ${d.total} registered`, d.attended ? 'good' : ''],
-      ['No-show', d.no_show, d.total ? `${100 - d.rate}% of the room` : '—', d.no_show ? 'warn' : ''],
-      ['Turnout', d.rate + '%', d.total ? `${d.attended} of ${d.total}` : 'nobody yet',
-       d.rate >= 70 ? 'good' : d.rate >= 40 ? 'opp' : 'warn']
+      ['Invited', d.total, 'across all brokers', ''],
+      ['Messages sent', d.sent_ok, d.sent_failed ? `${d.sent_failed} failed` : 'none failed',
+       d.sent_failed ? 'warn' : 'good'],
+      ['Turned up', d.attended, `of ${d.total} invited`, d.attended ? 'good' : ''],
+      ['No-show', d.no_show, d.total ? `${100 - d.rate}% of the room` : '—',
+       d.no_show ? 'warn' : ''],
+      ['Turnout', d.total ? d.rate + '%' : '—',
+       d.total ? `${d.attended} of ${d.total}` : 'not started',
+       !d.total ? '' : d.rate >= 70 ? 'good' : d.rate >= 40 ? 'opp' : 'warn']
     ];
     $('figs').innerHTML = cards.map(([k, v, s, cls]) => `
       <div class="fig"><div class="k">${k}</div>
@@ -96,85 +206,55 @@
         <td class="r num bar" style="--w:${JSL.pct(b.registered, max)}">${b.registered}</td>
         <td class="r num">${b.attended}</td>
         <td class="r num">${b.no_show}</td>
+        <td class="r num"${b.failed ? ' style="color:var(--neg)"' : ''}>${b.failed}</td>
         <td class="r num">${b.rate}%</td>
       </tr>`).join('');
+  }
+
+  // A tick, a cross, or a dash. The dash matters: it means we have no record
+  // either way, which is not the same as "it failed".
+  function chan(ok, detail) {
+    if (ok === true)  return '<span class="chip ok">✓ sent</span>';
+    if (ok === false) return `<span class="chip bad" title="${JSL.esc(detail)}">✕ failed</span>`;
+    return '<span class="chip">· no record</span>';
   }
 
   function people(d, filter) {
     const f = (filter || '').trim().toLowerCase();
     const rows = d.people.filter(p => !f ||
-      p.name.toLowerCase().includes(f) || (p.reference || '').toLowerCase().includes(f));
+      p.name.toLowerCase().includes(f) ||
+      (p.reference || '').toLowerCase().includes(f) ||
+      (p.broker || '').toLowerCase().includes(f));
     $('peopleEmpty').hidden = rows.length > 0;
     $('peopleEmpty').textContent = d.people.length
-      ? 'Nobody matches that.' : 'Nobody has registered yet.';
-    // The glyph carries the state as well as the colour, so the column still
-    // reads for anyone who cannot tell the two greens apart.
+      ? 'Nobody matches that.' : 'Nobody has been invited yet.';
     $('people').innerHTML = rows.map(p => `
       <tr>
-        <td>${JSL.esc(p.name)}</td>
-        <td class="num ref">${JSL.esc(p.reference || '—')}</td>
+        <td>${JSL.esc(p.name)}<div class="sub">${JSL.esc(p.phone || p.email || '')}</div></td>
         <td>${JSL.esc(p.broker)}</td>
-        <td class="num">${JSL.esc(p.phone || '—')}</td>
+        <td class="num ref">${JSL.esc(p.reference || '—')}</td>
+        <td>${chan(p.whatsapp_ok, p.whatsapp_detail)}</td>
+        <td>${chan(p.email_ok, p.email_detail)}</td>
         <td>${p.attended
               ? '<span class="chip ok">✓ checked in</span>'
               : '<span class="chip">· not yet</span>'}</td>
       </tr>`).join('');
   }
 
-  async function load() {
-    const id = +$('ev').value;
-    $('refresh').disabled = true;
-    try {
-      data = await JSL.get('/api/stats?subevent=' + id);
-      $('title').textContent = data.subevent.name;
-      const sv = data.subevent;
-      const credit = [sv.speaker_title, sv.speaker_org].filter(Boolean).join(', ');
-      const lead = sv.speaker
-        ? `${sv.speaker}${credit ? ' — ' + credit : ''} · ${sv.location}`
-        : sv.location;
-      // Say when the invitation details are missing rather than quietly
-      // rendering a half-empty event.
-      $('denom').textContent = sv.speaker
-        ? `${lead} · registrations and turnout, live from the door.`
-        : `${lead} · no speaker recorded for this event yet.`;
-      figs(data); brokers(data); people(data, $('q').value);
-    } catch (e) {
-      $('boot').hidden = false;
-      $('boot').className = 'note bad';
-      $('boot').textContent = e.message;
-    } finally {
-      $('refresh').disabled = false;
-    }
-  }
-
-  $('ev').addEventListener('change', load);
-  $('refresh').addEventListener('click', load);
   $('q').addEventListener('input', () => data && people(data, $('q').value));
 
+  // --- boot --------------------------------------------------------------
   (async function () {
     try {
-      const s = await JSL.get('/api/session');
-      $('who').innerHTML = `<b>${JSL.esc(s.display_name)}</b>${JSL.esc(s.role)}`;
-      if (s.role === 'broker') $('brokersHead').textContent = 'Your registrations';
-      const evs = await JSL.get('/api/events');
-      if (!evs.length) {
-        $('boot').className = 'note warn';
-        $('boot').textContent = 'There are no events yet.';
-        return;
-      }
-      $('ev').innerHTML = evs.map(e =>
-        `<option value="${e.id}">${JSL.esc(e.name)} · ${JSL.esc(e.when)}</option>`).join('');
-      const next = evs.find(e => !e.past) || evs[0];
-      $('ev').value = next.id;
-      $('boot').hidden = true;
-      $('body').hidden = false;
-      await load();
-      // The door is the reason this screen is open; keep it current without
-      // anyone having to remember to press refresh.
-      setInterval(load, 30000);
+      await showList();
     } catch (e) {
-      $('boot').className = 'note bad';
-      $('boot').textContent = e.message;
+      $('boot').hidden = true;
+      $('login').hidden = false;
+      $('pw').focus();
+      if (!/signed in|password/i.test(e.message)) {
+        $('loginErr').textContent = e.message;
+        $('loginErr').hidden = false;
+      }
     }
   })();
 })();

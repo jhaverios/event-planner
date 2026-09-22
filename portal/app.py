@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -35,15 +36,24 @@ def _startup():
 
 # ---------------------------------------------------------------- helpers
 
-def _identity(request: Request, authorization: str = None):
+# The registration desk is the website. A broker opens events.jslwealth.in,
+# types their broker code, and that is the sign-in. No token in a URL, because
+# a link that has to be found again is a link that gets lost.
+PUBLIC_DESK = {"role": "desk", "subject": "public", "public": True}
+
+
+def _identity(request: Request, authorization: str = None, allow_public: bool = False):
     token = None
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:]
-    token = token or request.query_params.get("t") or request.cookies.get("jslt")
+    token = (token or request.query_params.get("t")
+             or request.cookies.get("jsladmin") or request.cookies.get("jslt"))
     who = auth.verify(token) if token else None
-    if not who:
-        raise HTTPException(401, "link expired or not valid")
-    return who
+    if who:
+        return who
+    if allow_public:
+        return dict(PUBLIC_DESK)
+    raise HTTPException(401, "not signed in")
 
 
 def _need(who, *roles):
@@ -104,11 +114,17 @@ def event_line(name, details):
 
 @app.get("/")
 def root(request: Request):
-    who = _identity(request)
-    page = {"desk": "/r", "broker": "/r", "admin": "/admin",
-            "door": "/door"}[who["role"]]
+    """The registration desk, for anyone who opens the site.
+
+    A personal or admin link still lands where it belongs; everyone else gets
+    the broker form, which is what the domain is for.
+    """
     t = request.query_params.get("t", "")
-    return RedirectResponse(f"{page}?t={t}" if t else page)
+    if t:
+        who = auth.verify(t)
+        if who and who["role"] in ("admin", "door"):
+            return RedirectResponse(f"/{who['role']}?t={t}")
+    return FileResponse(STATIC / "register.html")
 
 
 for _route, _file in (("/r", "register.html"), ("/admin", "admin.html"),
@@ -161,7 +177,7 @@ def healthz():
 
 @app.get("/api/session")
 def session(request: Request, authorization: str = Header(None)):
-    who = _identity(request, authorization)
+    who = _identity(request, authorization, allow_public=True)
     out = dict(who)
     if who["role"] == "desk":
         # The desk link belongs to no one broker, so the form asks who is using it.
@@ -176,13 +192,47 @@ def session(request: Request, authorization: str = Header(None)):
     else:
         out["display_name"] = who["subject"]
         out["ask_broker_code"] = False
+    out["admin_password_set"] = auth.admin_password_set()
     out["channels"] = {"whatsapp": wati.configured(), "email": mailer.configured()}
     return out
 
 
+class AdminLogin(BaseModel):
+    password: str
+
+
+@app.post("/api/admin/login")
+def admin_login(body: AdminLogin, request: Request, response: Response):
+    if not auth.admin_password_set():
+        raise HTTPException(503, "No admin password is configured on the server")
+    if not auth.check_admin_password(body.password):
+        raise HTTPException(401, "That password is not right")
+    token = auth.issue("admin", "Administrator", 30)
+    # httponly so a script on the page cannot read it; samesite=lax so it
+    # survives a normal click-through but not a cross-site form post.
+    #
+    # secure follows the actual scheme rather than being hardcoded. In
+    # production that is always https, so the flag is set; over plain http a
+    # hardcoded Secure means the browser accepts the cookie and never sends it
+    # back, and the sign-in appears to work while nothing is signed in.
+    # uvicorn runs with --proxy-headers, so this is the scheme the client used,
+    # not the one nginx used to reach us.
+    https = request.url.scheme == "https" or \
+        request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+    response.set_cookie("jsladmin", token, httponly=True, samesite="lax",
+                        secure=https, max_age=30 * 86400, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(response: Response):
+    response.delete_cookie("jsladmin", path="/")
+    return {"ok": True}
+
+
 @app.get("/api/events")
 def events(request: Request, authorization: str = Header(None)):
-    _identity(request, authorization)
+    _identity(request, authorization, allow_public=True)
     now = dt.datetime.now(dt.timezone.utc)
     details = db.all_event_details()
     out = []
@@ -210,8 +260,9 @@ def clients(request: Request, q: str = Query("", max_length=80),
     A personal link carries the code; the shared desk link passes the code the
     broker typed. Either way a broker never sees another broker's clients.
     """
-    who = _need(_identity(request, authorization), "desk", "broker")
-    code = who["subject"] if who["role"] == "broker" else broker.strip().upper()
+    who = _need(_identity(request, authorization, allow_public=True), "desk", "broker")
+    code = who["subject"] if who["role"] == "broker" and not who.get("public") \
+        else broker.strip().upper()
     if not code:
         return []
     return db.search_clients(code, q)
@@ -227,11 +278,12 @@ class Registration(BaseModel):
 
 @app.post("/api/register")
 def register(body: Registration, request: Request, authorization: str = Header(None)):
-    who = _need(_identity(request, authorization), "desk", "broker", "admin")
+    who = _need(_identity(request, authorization, allow_public=True),
+                "desk", "broker", "admin")
 
     # A personal link already knows whose registration this is. The shared desk
     # link does not, so the broker states it and it is recorded as given.
-    if who["role"] == "broker":
+    if who["role"] == "broker" and not who.get("public"):
         broker_code = who["subject"]
     else:
         broker_code = (body.broker_code or "").strip().upper()
@@ -285,10 +337,58 @@ def register(body: Registration, request: Request, authorization: str = Header(N
     if who["role"] in ("desk", "broker"):
         db.remember_client(broker_code, name, phone, email)
 
+    # So the admin can answer "did their message go out" tomorrow, not only in
+    # the second after the broker pressed submit.
+    db.record_delivery(order["code"], subevent_id=body.subevent,
+                       broker_code=broker_code, name=name, phone=phone,
+                       email=email, delivery=delivery)
+
     return {"reference": order["code"], "name": name, "event": ev["name"],
             "event_line": sent_as,
             "when": when_text(ev["date_from"]), "broker_code": broker_code,
             "phone": phone or "", "email": email or "", "delivery": delivery}
+
+
+@app.get("/api/overview")
+def overview(request: Request, authorization: str = Header(None)):
+    """One card per event: what it is, and how it is going.
+
+    Counted from pretix rather than from our own rows, because pretix is what
+    the door actually scans against.
+    """
+    who = _need(_identity(request, authorization), "admin")
+    ident = {v: k for k, v in pretix.questions().items()}
+    details = db.all_event_details()
+    cards = []
+    for ev in pretix.subevents():
+        rows = [p for p in pretix.positions(subevent_id=ev["id"])
+                if not p.get("canceled")]
+        sent = db.deliveries_for(ev["id"])
+        attended = sum(1 for p in rows if p.get("checkins"))
+        brokers = set()
+        for p in rows:
+            a = {ident.get(x["question"]): x["answer"] for x in p.get("answers", [])}
+            if a.get("broker_code"):
+                brokers.add(a["broker_code"])
+        d = details.get(ev["id"], {})
+        cards.append({
+            **ev,
+            "when": when_text(ev["date_from"]),
+            "speaker": d.get("speaker") or "",
+            "speaker_title": d.get("speaker_title") or "",
+            "speaker_org": d.get("speaker_org") or "",
+            "registered": len(rows),
+            "attended": attended,
+            "brokers": len(brokers),
+            "whatsapp_sent": sum(1 for r in sent.values() if r.get("whatsapp_ok")),
+            "whatsapp_failed": sum(1 for r in sent.values()
+                                   if r.get("whatsapp_ok") is False),
+            "email_sent": sum(1 for r in sent.values() if r.get("email_ok")),
+            "email_failed": sum(1 for r in sent.values() if r.get("email_ok") is False),
+            "rate": round(100 * attended / len(rows)) if rows else 0,
+        })
+    cards.sort(key=lambda c: c["date_from"])
+    return {"admin": who["subject"], "events": cards}
 
 
 @app.get("/api/stats")
@@ -297,6 +397,7 @@ def stats(request: Request, subevent: int = Query(...),
     who = _identity(request, authorization)
     ident = {v: k for k, v in pretix.questions().items()}
     rows = pretix.positions(subevent_id=subevent)
+    sent = db.deliveries_for(subevent)
 
     scope = who["subject"] if who["role"] == "broker" else None
     per, total, attended, rsvp = {}, 0, 0, {"yes": 0, "no": 0, "none": 0}
@@ -317,17 +418,27 @@ def stats(request: Request, subevent: int = Query(...),
         b = per.setdefault(code, {"broker": code, "registered": 0, "attended": 0})
         b["registered"] += 1
         b["attended"] += came
+        d = sent.get(p.get("order")) or {}
         people.append({"name": p.get("attendee_name") or "—",
                        "reference": p.get("order"),
                        "broker": code,
                        "phone": answers.get("client_phone") or "",
+                       "email": d.get("email") or "",
                        "rsvp": state,
-                       "attended": came})
+                       "attended": came,
+                       # None means we have no record either way — an order
+                       # created before this table existed, or by hand.
+                       "whatsapp_ok": d.get("whatsapp_ok"),
+                       "whatsapp_detail": d.get("whatsapp_detail") or "",
+                       "email_ok": d.get("email_ok"),
+                       "email_detail": d.get("email_detail") or ""})
 
     names = db.broker_names([c for c in per if c != "—"])
     for code, b in per.items():
         b["name"] = names.get(code, code)
         b["no_show"] = b["registered"] - b["attended"]
+        b["failed"] = sum(1 for pp in people if pp["broker"] == code
+                          and (pp["whatsapp_ok"] is False or pp["email_ok"] is False))
         b["rate"] = round(100 * b["attended"] / b["registered"]) if b["registered"] else 0
 
     people.sort(key=lambda r: (not r["attended"], r["name"]))
@@ -338,6 +449,10 @@ def stats(request: Request, subevent: int = Query(...),
             "total": total, "attended": attended, "no_show": total - attended,
             "rate": round(100 * attended / total) if total else 0,
             "rsvp": rsvp,
+            "sent_ok": sum(1 for p in people
+                           if p["whatsapp_ok"] or p["email_ok"]),
+            "sent_failed": sum(1 for p in people
+                               if p["whatsapp_ok"] is False or p["email_ok"] is False),
             "brokers": sorted(per.values(), key=lambda b: -b["registered"]),
             "people": people}
 

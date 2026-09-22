@@ -166,3 +166,51 @@ def speaker_line(details):
     if details.get("speaker_org"):
         bits.append(details["speaker_org"])
     return ", ".join(bits)
+
+
+# --- did the invitation actually go out? ----------------------------------
+
+def record_delivery(order_code, *, subevent_id, broker_code, name, phone,
+                    email, delivery):
+    """Remember what happened to the messages.
+
+    Never raises. By the time this runs the order exists and the client has
+    their pass; losing a bookkeeping row is a smaller problem than telling a
+    broker the registration failed when it plainly did not. The same rule that
+    remember_client learned the hard way.
+    """
+    if not available() or not order_code:
+        return
+    w = (delivery or {}).get("whatsapp") or {}
+    e = (delivery or {}).get("email") or {}
+    try:
+        with _cur() as c:
+            c.execute(
+                """INSERT INTO deliveries
+                     (order_code, subevent_id, broker_code, name, phone, email,
+                      whatsapp_ok, whatsapp_detail, email_ok, email_detail)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (order_code) DO UPDATE SET
+                     whatsapp_ok = EXCLUDED.whatsapp_ok,
+                     whatsapp_detail = EXCLUDED.whatsapp_detail,
+                     email_ok = EXCLUDED.email_ok,
+                     email_detail = EXCLUDED.email_detail""",
+                (order_code, subevent_id, broker_code, name, phone or None,
+                 email or None,
+                 w.get("ok") if w else None, (w.get("detail") or "")[:300] or None,
+                 e.get("ok") if e else None, (e.get("detail") or "")[:300] or None))
+    except Exception as ex:
+        print(f"deliveries: could not record {order_code}: "
+              f"{type(ex).__name__}: {ex}", flush=True)
+
+
+def deliveries_for(subevent_id):
+    """{order_code: row} for one event, so the admin can join it onto pretix."""
+    if not available():
+        return {}
+    try:
+        with _cur() as c:
+            c.execute("SELECT * FROM deliveries WHERE subevent_id = %s", (subevent_id,))
+            return {r["order_code"]: dict(r) for r in c.fetchall()}
+    except Exception:
+        return {}

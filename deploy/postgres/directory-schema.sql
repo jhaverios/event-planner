@@ -85,3 +85,29 @@ CREATE TABLE IF NOT EXISTS event_details (
 DROP TRIGGER IF EXISTS event_details_touch ON event_details;
 CREATE TRIGGER event_details_touch BEFORE UPDATE ON event_details
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+-- Was the invitation actually sent?
+--
+-- The broker's screen showed a tick per channel and then forgot it, so the
+-- admin could not answer the one question that matters the morning after:
+-- did this person's message go out. Keyed by the pretix order code, because
+-- that is the reference a human quotes.
+--
+-- pretix still owns whether they are registered and whether they turned up.
+-- This owns only what happened to the message.
+CREATE TABLE IF NOT EXISTS deliveries (
+    order_code      TEXT PRIMARY KEY,
+    subevent_id     BIGINT,
+    broker_code     TEXT,
+    name            TEXT,
+    phone           TEXT,
+    email           TEXT,
+    whatsapp_ok     BOOLEAN,
+    whatsapp_detail TEXT,
+    email_ok        BOOLEAN,
+    email_detail    TEXT,
+    sent_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS deliveries_subevent_idx ON deliveries (subevent_id);
+CREATE INDEX IF NOT EXISTS deliveries_broker_idx   ON deliveries (broker_code);

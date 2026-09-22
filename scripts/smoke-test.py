@@ -97,16 +97,53 @@ for k in ("whatsapp", "email"):
            "" if h.get("checks", {}).get(k) else "not configured")
 
 # --- 2. the auth boundaries ---------------------------------------------
-check("auth: no token is refused", c.get("/api/session").status_code == 401)
-check("auth: a tampered signature is refused",
-      c.get("/api/session", headers=H("desk.smoke.9999999999." + "A" * 32)).status_code == 401)
-check("auth: an expired link is refused",
-      c.get("/api/session", headers=H("desk.smoke.1000000000." + "A" * 32)).status_code == 401)
-check("auth: a desk link cannot open the door console",
+# The registration desk is deliberately public: the domain IS the form. What
+# must stay shut is the admin data and the door.
+check("public: the site opens without a link",
+      c.get("/").status_code == 200)
+check("public: a visitor is treated as the registration desk",
+      c.get("/api/session").status_code == 200
+      and c.get("/api/session").json().get("role") == "desk")
+check("public: a visitor can list events", c.get("/api/events").status_code == 200)
+
+check("closed: admin data refuses an anonymous visitor",
+      c.get("/api/overview").status_code == 401)
+check("closed: admin data refuses a desk link",
+      c.get("/api/overview", headers=H(desk)).status_code == 403)
+check("closed: the door refuses an anonymous visitor",
+      c.post("/api/checkin", json={"code": "XXXXX", "list_id": 1}).status_code == 401)
+check("closed: a desk link cannot open the door console",
       c.post("/api/checkin", headers=H(desk), json={"code": "XXXXX", "list_id": 1}).status_code == 403)
-check("auth: a door link cannot register anyone",
+check("closed: a door link cannot register anyone",
       c.post("/api/register", headers=H(door),
              json={"subevent": 1, "name": "x", "phone": "9833693876"}).status_code == 403)
+check("closed: a tampered signature is refused",
+      c.get("/api/overview", headers=H("admin.x.9999999999." + "A" * 32)).status_code == 401)
+check("closed: an expired admin link is refused",
+      c.get("/api/overview", headers=H("admin.x.1000000000." + "A" * 32)).status_code == 401)
+
+# The admin password guards the one screen that shows every client's number.
+rr = c.post("/api/admin/login", json={"password": "definitely-not-the-password"})
+check("admin: a wrong password is refused", rr.status_code == 401,
+      f"HTTP {rr.status_code}")
+adminpw = os.environ.get("ADMIN_PASSWORD", "")
+if adminpw:
+    rr = c.post("/api/admin/login", json={"password": adminpw})
+    ok = check("admin: the right password signs in", rr.status_code == 200,
+               f"HTTP {rr.status_code}")
+    if ok:
+        check("admin: the session cookie opens the dashboard",
+              c.get("/api/overview").status_code == 200)
+        ovr = c.get("/api/overview")
+        if ovr.status_code == 200:
+            evs_ = ovr.json().get("events", [])
+            check("admin: every event appears as a card", bool(evs_),
+                  f"{len(evs_)} card(s)")
+        c.post("/api/admin/logout")
+        check("admin: signing out closes it again",
+              c.get("/api/overview").status_code == 401)
+else:
+    record("admin: password sign-in", SKIP, "ADMIN_PASSWORD not set here")
 
 # --- 2b. every role can actually have a link minted ----------------------
 # issue-link.py keeps its own role-to-path map, separate from auth.ROLES.
@@ -165,7 +202,22 @@ if subevent:
               f"HTTP {rr.status_code} · {msg[:70]}")
 
 # --- 5. the door, on a code that does not exist --------------------------
-rr = c.post("/api/checkin", headers=H(door), json={"code": "ZZZZZ", "list_id": 1})
+# Find the check-in list for THIS event. Hardcoding 1 is right only by
+# accident, and produces "invalid" — which reads like a broken pass rather
+# than a test looking at the wrong door.
+LIST_ID = 1
+try:
+    lists = c.get("/api/checkinlists", headers=H(door))
+    if lists.status_code == 200:
+        rows = lists.json()
+        match = [l for l in rows if l.get("subevent") == subevent]
+        LIST_ID = (match or rows or [{"id": 1}])[0]["id"]
+        check("door: a check-in list exists for this event", bool(match),
+              f"list {LIST_ID}")
+except Exception as e:
+    record("door: finding the check-in list", SKIP, str(e)[:60])
+
+rr = c.post("/api/checkin", headers=H(door), json={"code": "ZZZZZ", "list_id": LIST_ID})
 check("door: an unknown reference is refused, not crashed",
       rr.status_code == 200 and rr.json().get("reason") == "not_found",
       f"HTTP {rr.status_code} · {rr.json() if rr.status_code == 200 else ''}")
@@ -182,7 +234,8 @@ else:
         body["phone"] = a.phone
     if a.email:
         body["email"] = a.email
-    rr = c.post("/api/register", headers=H(desk), json=body)
+    # Deliberately unauthenticated: this is how a broker will actually use it.
+    rr = c.post("/api/register", json=body)
     ok = check("register: accepted", rr.status_code == 200,
                f"HTTP {rr.status_code} · {rr.text[:120]}")
     if ok:
@@ -208,11 +261,11 @@ else:
 
         # --- the door, for real ---
         r1 = c.post("/api/checkin", headers=H(door),
-                    json={"code": reference, "list_id": 1}).json()
+                    json={"code": reference, "list_id": LIST_ID}).json()
         check("door: admits the guest", r1.get("status") == "ok",
               f"{r1.get('status')} · {r1.get('reason') or ''}")
         r2 = c.post("/api/checkin", headers=H(door),
-                    json={"code": reference, "list_id": 1}).json()
+                    json={"code": reference, "list_id": LIST_ID}).json()
         check("door: refuses the same pass twice",
               r2.get("reason") == "already_redeemed", str(r2.get("reason")))
 
@@ -229,6 +282,12 @@ else:
                       mine[0]["broker"] == a.broker, mine[0]["broker"])
             check("dashboard: turnout counts it", s["attended"] >= 1,
                   f"{s['attended']}/{s['total']} = {s['rate']}%")
+            # The whole point of the deliveries table: answering, later, whether
+            # the message went out.
+            if mine:
+                check("dashboard: records that the message was sent",
+                      mine[0]["whatsapp_ok"] is True or mine[0]["email_ok"] is True,
+                      f"whatsapp={mine[0]['whatsapp_ok']} email={mine[0]['email_ok']}")
 
         # --- a broker sees only their own ---
         try:

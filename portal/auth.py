@@ -65,3 +65,23 @@ def verify(token: str):
     except ValueError:
         return None
     return {"role": role, "subject": subject, "expires": int(expiry)}
+
+
+# --- admin sign-in --------------------------------------------------------
+# Brokers get no password: fifty people who register two clients a month will
+# not keep one, which is the whole reason for the signed link. An administrator
+# is different. They bookmark /admin and come back in three months, and a link
+# that expired in the meantime is not an admin page.
+
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
+
+def admin_password_set():
+    return bool(ADMIN_PASSWORD)
+
+
+def check_admin_password(supplied):
+    """Constant time, so a wrong password reveals nothing by how long it took."""
+    if not ADMIN_PASSWORD or not supplied:
+        return False
+    return hmac.compare_digest(supplied.encode(), ADMIN_PASSWORD.encode())
