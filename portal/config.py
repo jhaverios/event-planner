@@ -20,6 +20,11 @@ PRETIX_EVENT = os.environ.get("PRETIX_EVENT", "investor-events")
 WATI_BASE = os.environ.get("WATI_API_BASE", "").rstrip("/")
 WATI_TOKEN = os.environ.get("WATI_TOKEN", "")
 WATI_TEMPLATE = os.environ.get("WATI_TEMPLATE", "jsl_event_v3")
+# The day-before reminder. Same six parameters as the confirmation, so only
+# the wording differs — "we look forward to seeing you tomorrow" rather than
+# "your registration is confirmed", which is wrong to say twice.
+WATI_REMINDER_TEMPLATE = os.environ.get("WATI_REMINDER_TEMPLATE",
+                                        "jsl_event_reminder_v1")
 
 DIRECTORY_DSN = os.environ.get("DIRECTORY_DSN", "")
 

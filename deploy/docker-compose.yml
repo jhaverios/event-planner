@@ -64,6 +64,7 @@ services:
       WATI_API_BASE: ${WATI_API_BASE:-}
       WATI_TOKEN: ${WATI_TOKEN:-}
       WATI_TEMPLATE: ${WATI_TEMPLATE:-jsl_event_v3}
+      WATI_REMINDER_TEMPLATE: ${WATI_REMINDER_TEMPLATE:-jsl_event_reminder_v1}
       ZEPTO_API_KEY: ${ZEPTO_SMTP_PASS:-}
       MAIL_FROM: ${MAIL_FROM:-}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Jhaveri Securities}

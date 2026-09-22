@@ -7,6 +7,7 @@ door or in a report.
 import contextlib
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extras
 import psycopg2.pool
 
@@ -28,7 +29,7 @@ def available():
 # Every table the portal writes to. Kept here rather than inferred, so a table
 # added to the schema file but never created on a running machine is caught.
 EXPECTED_TABLES = ("brokers", "clients", "import_batches", "event_details",
-                   "deliveries")
+                   "deliveries", "reminders")
 
 
 def missing_tables():
@@ -253,6 +254,52 @@ def forget_delivery(order_code):
     except Exception as ex:
         print(f"deliveries: could not forget {order_code}: "
               f"{type(ex).__name__}: {ex}", flush=True)
+
+
+def reminded(template):
+    """Order codes already successfully sent this template.
+
+    One query for the whole run rather than one per person: two hundred guests
+    is two hundred round trips otherwise, and the reminder goes out in a
+    single pass.
+    """
+    if not available():
+        return set()
+    try:
+        with _cur() as c:
+            c.execute("SELECT order_code FROM reminders "
+                      "WHERE template = %s AND ok", (template,))
+            return {r["order_code"] for r in c.fetchall()}
+    except Exception as ex:
+        print(f"reminders: could not read who was already sent: "
+              f"{type(ex).__name__}: {ex}", flush=True)
+        # Empty would mean "nobody has been reminded", and the caller would
+        # message everyone a second time. Refuse instead.
+        raise
+
+
+def record_reminder(order_code, template, ok, detail=""):
+    """Write down that a reminder was attempted.
+
+    Unlike record_delivery this MUST be able to report failure: if the row does
+    not land, the next run has no way to know this person was already messaged,
+    and a duplicate reminder is exactly what the table exists to prevent. The
+    unique index refuses a second successful row, which is not an error here.
+    """
+    if not available():
+        return False
+    try:
+        with _cur() as c:
+            c.execute("INSERT INTO reminders (order_code, template, ok, detail) "
+                      "VALUES (%s, %s, %s, %s)",
+                      (order_code, template, bool(ok), (detail or "")[:300] or None))
+        return True
+    except psycopg2.errors.UniqueViolation:
+        return True  # already recorded as sent; nothing to do
+    except Exception as ex:
+        print(f"reminders: could not record {order_code}: "
+              f"{type(ex).__name__}: {ex}", flush=True)
+        return False
 
 
 def deliveries_for(subevent_id):

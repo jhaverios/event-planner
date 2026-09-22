@@ -159,6 +159,7 @@ backfill() { # backfill KEY VALUE
 backfill PRETIX_ADMIN_EMAIL "admin@${PRETIX_DOMAIN:-localhost}"
 # Safe to invent: the portal reads it at startup and nothing else knows it.
 backfill ADMIN_PASSWORD "$(rnd 8)"
+backfill WATI_REMINDER_TEMPLATE "jsl_event_reminder_v1"
 # NOT safe to invent: it belongs to a user that already exists inside pretix,
 # so writing a fresh value here would leave the file confidently wrong.
 if ! grep -qE '^PRETIX_ADMIN_PASSWORD=.+' "$ENVFILE"; then

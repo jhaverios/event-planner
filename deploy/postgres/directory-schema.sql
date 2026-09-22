@@ -111,3 +111,24 @@ CREATE TABLE IF NOT EXISTS deliveries (
 
 CREATE INDEX IF NOT EXISTS deliveries_subevent_idx ON deliveries (subevent_id);
 CREATE INDEX IF NOT EXISTS deliveries_broker_idx   ON deliveries (broker_code);
+
+-- Who has already been reminded, and for which template.
+--
+-- Kept apart from `deliveries` deliberately. That table only has rows for
+-- registrations made after it existed — ZYXJK has none — and a reminder must
+-- not depend on bookkeeping that predates it. The partial unique index is the
+-- real guard against sending twice: the application checks first, but two runs
+-- overlapping would both pass that check, and only the database can refuse the
+-- second write.
+CREATE TABLE IF NOT EXISTS reminders (
+    id          BIGSERIAL PRIMARY KEY,
+    order_code  TEXT NOT NULL,
+    template    TEXT NOT NULL,
+    ok          BOOLEAN NOT NULL,
+    detail      TEXT,
+    sent_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Only successful sends are unique: a failure must stay retryable.
+CREATE UNIQUE INDEX IF NOT EXISTS reminders_once_idx
+    ON reminders (order_code, template) WHERE ok;
+CREATE INDEX IF NOT EXISTS reminders_order_idx ON reminders (order_code);
