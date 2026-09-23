@@ -41,6 +41,10 @@ ap.add_argument("--send", action="store_true",
                 default=bool(os.environ.get("REMINDER_SEND")),
                 help="actually send. Without it, nothing leaves the building.")
 ap.add_argument("--template", default=config.WATI_REMINDER_TEMPLATE)
+ap.add_argument("--only", default=os.environ.get("REMINDER_ONLY", ""),
+                help="comma-separated references, e.g. --only ZYXJK. Use it to "
+                     "prove the message renders on a handset you hold before "
+                     "sending to everybody.")
 ap.add_argument("--limit", type=int, default=0,
                 help="stop after N sends — for proving it works on one person first")
 ap.add_argument("--pause", type=float, default=0.4,
@@ -76,9 +80,12 @@ except Exception as e:
     sys.exit(f"cannot read who has already been reminded ({type(e).__name__}: {e}).\n"
              "Refusing to send, because a re-run would message everyone twice.")
 
+only = {x.strip().upper() for x in a.only.split(",") if x.strip()}
+
 print(f"\n{ev['name']}\n  {when} · {venue}"
       f"\n  template: {a.template}"
-      f"\n  mode: {'SENDING' if a.send else 'dry run — nothing will be sent'}\n")
+      f"\n  mode: {'SENDING' if a.send else 'dry run — nothing will be sent'}"
+      + (f"\n  limited to: {', '.join(sorted(only))}" if only else "") + "\n")
 
 sent = failed = 0
 skipped = {}
@@ -91,6 +98,8 @@ for p in pretix.positions(subevent_id=a.subevent):
     def skip(why):
         skipped.setdefault(why, []).append(f"{order} {name}".strip())
 
+    if only and order not in only:
+        continue
     if p.get("canceled") or status.get(order) in ("c", "e"):
         skip("cancelled or expired")
         continue
