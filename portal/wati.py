@@ -16,6 +16,49 @@ def configured():
     return bool(config.WATI_BASE and config.WATI_TOKEN)
 
 
+BODY_PARAMS = ("name", "event", "datetime", "venue", "reference")
+_param_cache = {}
+
+
+def body_param_names(template):
+    """The names WATI actually stores for a template's five body variables.
+
+    Read back, never assumed. jsl_event_v3 stores them as name/event/datetime/
+    venue/reference. jsl_event_reminder_v1, created through the same UI one day
+    later, stores them as "1".."5" — WATI names them from the positional token
+    when they are typed rather than inserted. Sending v3's names to the
+    reminder would have delivered five blank lines to fifty-one guests.
+
+    Falls back to the documented names if the lookup fails: a template we
+    cannot read is more likely to be the usual shape than not, and refusing to
+    send at all is the worse failure.
+    """
+    if template in _param_cache:
+        return _param_cache[template]
+    names = list(BODY_PARAMS)
+    try:
+        r = httpx.get(f"{config.WATI_BASE}/api/v1/getMessageTemplates",
+                      params={"pageSize": 80},
+                      headers={"Authorization": f"Bearer {config.WATI_TOKEN}"},
+                      timeout=25.0)
+        r.raise_for_status()
+        for t in r.json().get("messageTemplates", []):
+            if t.get("elementName") != template:
+                continue
+            got = [p.get("paramName") or p.get("name")
+                   for p in (t.get("customParams") or [])]
+            # qr_url is the header; whatever is left, in order, is the body.
+            body = [g for g in got if g and g != "qr_url"]
+            if len(body) >= len(BODY_PARAMS):
+                names = body[:len(BODY_PARAMS)]
+            break
+    except Exception as e:
+        print(f"wati: could not read parameter names for {template} "
+              f"({type(e).__name__}) — assuming {names}", flush=True)
+    _param_cache[template] = names
+    return names
+
+
 def send_pass(*, phone, name, event, when, venue, reference, qr_url,
               template=None, broadcast_prefix="pass"):
     """Returns (ok, detail). Never raises — a messaging failure must not undo
@@ -26,17 +69,14 @@ def send_pass(*, phone, name, event, when, venue, reference, qr_url,
     """
     if not configured():
         return False, "WATI is not configured"
+    tpl = template or config.WATI_TEMPLATE
+    keys = body_param_names(tpl)
+    values = (name, event, when, venue, reference)
     body = {
-        "template_name": template or config.WATI_TEMPLATE,
+        "template_name": tpl,
         "broadcast_name": f"{broadcast_prefix}_{reference}",
-        "parameters": [
-            {"name": "name", "value": name},
-            {"name": "event", "value": event},
-            {"name": "datetime", "value": when},
-            {"name": "venue", "value": venue},
-            {"name": "reference", "value": reference},
-            {"name": "qr_url", "value": qr_url},
-        ],
+        "parameters": [{"name": k, "value": v} for k, v in zip(keys, values)]
+                      + [{"name": "qr_url", "value": qr_url}],
     }
     try:
         r = httpx.post(
