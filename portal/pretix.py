@@ -114,16 +114,29 @@ def order_status():
     positions in place, so /orderpositions/ keeps returning a cancelled
     registration looking perfectly live. Filtering on the order's status is
     unambiguous, and at a couple of hundred orders it is one extra call.
+
+    This must never raise. It refines a count; it does not produce the page.
+    Letting it throw took the admin dashboard down with a 500 the day before
+    the event, because two endpoints had been given a hard dependency on a new
+    call with no fallback. Returning nothing degrades to the older behaviour —
+    a cancelled order may be counted for one page load — which is a cosmetic
+    wrong answer rather than no answer at all.
     """
     out, url, params = {}, "/orders/", {"page_size": 200}
-    with _client() as c:
-        while url:
-            r = c.get(url, params=params)
-            r.raise_for_status()
-            d = r.json()
-            for o in d["results"]:
-                out[o["code"]] = o.get("status")
-            url, params = d.get("next"), None
+    try:
+        with _client() as c:
+            while url:
+                r = c.get(url, params=params)
+                r.raise_for_status()
+                d = r.json()
+                for o in d["results"]:
+                    out[o["code"]] = o.get("status")
+                url, params = d.get("next"), None
+    except Exception as e:
+        print(f"pretix: could not read order statuses "
+              f"({type(e).__name__}: {str(e)[:300]}) — "
+              f"cancelled orders may be counted until this is fixed", flush=True)
+        return {}
     return out
 
 

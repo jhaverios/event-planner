@@ -217,6 +217,16 @@ if upcoming:
 else:
     subevent = None
 
+# --- 3b. the dashboard itself, without sending anything ------------------
+# /api/overview was already covered. /api/stats was NOT: the full run only
+# reached it after registering someone, so a --quick run could pass while the
+# per-event page returned 500 to every administrator. It needs an event id,
+# which is why it lives here rather than in the password block above.
+if subevent and (USE_SESSION or admin):
+    st_ = priv.get(f"/api/stats?subevent={subevent}", headers=H(admin))
+    check("dashboard: one event's detail loads",
+          st_.status_code == 200, f"HTTP {st_.status_code} {st_.text[:90]}")
+
 # --- 4. everything the form must reject ----------------------------------
 if subevent:
     bad = [
