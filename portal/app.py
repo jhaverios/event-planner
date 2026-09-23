@@ -195,8 +195,14 @@ def session(request: Request, authorization: str = Header(None)):
         out["ask_broker_code"] = False
         out["directory"] = db.available()
     else:
+        # Admin and door. They are not a broker, so they must still say which
+        # broker an invitation is for — exactly like the public desk. Setting
+        # this False hid the broker code field from an administrator who opened
+        # the registration page, leaving a form that could not be submitted.
+        # Only a per-broker link knows the code without being told.
         out["display_name"] = who["subject"]
-        out["ask_broker_code"] = False
+        out["ask_broker_code"] = True
+        out["directory"] = db.available()
     out["admin_password_set"] = auth.admin_password_set()
     out["channels"] = {"whatsapp": wati.configured(), "email": mailer.configured()}
     return out

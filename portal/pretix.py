@@ -19,6 +19,10 @@ def _client():
         headers={"Authorization": f"Token {config.PRETIX_TOKEN}",
                  "Host": config.PRETIX_HOST,
                  "Content-Type": "application/json"},
+        # A redirect must not be a hard error. Paging by number means we no
+        # longer walk into pretix's own http links, but anything else that
+        # 301s should still be followed rather than raising.
+        follow_redirects=True,
         timeout=20.0)
 
 
@@ -122,16 +126,18 @@ def order_status():
     a cancelled order may be counted for one page load — which is a cosmetic
     wrong answer rather than no answer at all.
     """
-    out, url, params = {}, "/orders/", {"page_size": 200}
+    out, page = {}, 1
     try:
         with _client() as c:
-            while url:
-                r = c.get(url, params=params)
+            while True:
+                r = c.get("/orders/", params={"page_size": 200, "page": page})
                 r.raise_for_status()
                 d = r.json()
                 for o in d["results"]:
                     out[o["code"]] = o.get("status")
-                url, params = d.get("next"), None
+                if not d.get("next"):
+                    break
+                page += 1
     except Exception as e:
         print(f"pretix: could not read order statuses "
               f"({type(e).__name__}: {str(e)[:300]}) — "
@@ -141,18 +147,33 @@ def order_status():
 
 
 def positions(subevent_id=None):
-    """Every registration with its answers and check-ins, paged out fully."""
-    out, url, params = [], "/orderpositions/", {"page_size": 200}
+    """Every registration with its answers and check-ins, paged out fully.
+
+    Pages by NUMBER against our own base url, and deliberately ignores the
+    `next` link pretix returns. That link is absolute and carries pretix's
+    public address over plain http — so following it leaves the docker network,
+    hits nginx, gets a 301 to https, and raises. The whole admin dashboard went
+    down that way the day before the event, and the bug had been sitting here
+    since this was written: with fewer than one page of registrations pretix
+    never emits a `next` link, so nothing went wrong until the fifty-first
+    guest. It would have failed on the night, with a full hall.
+
+    The rule this earns: never follow a URL a server hands back about itself.
+    It describes how the world reaches it, not how we do.
+    """
+    out, page = [], 1
+    params = {"page_size": 200}
     if subevent_id:
         params["subevent"] = subevent_id
     with _client() as c:
-        while url:
-            r = c.get(url, params=params)
+        while True:
+            r = c.get("/orderpositions/", params={**params, "page": page})
             r.raise_for_status()
             d = r.json()
             out.extend(d["results"])
-            url, params = d.get("next"), None
-    return out
+            if not d.get("next"):
+                return out
+            page += 1
 
 
 def checkin_lists():
