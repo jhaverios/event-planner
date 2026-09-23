@@ -279,6 +279,43 @@ def clients(request: Request, q: str = Query("", max_length=80),
     return db.search_clients(code, q)
 
 
+def _already_registered(subevent_id, name, phone):
+    """The reference this person already holds for this event, or None.
+
+    A duplicate is the same NAME on the same NUMBER — never the number alone.
+    Of the six repeated numbers in the real guest list, three were couples
+    sharing a handset: Dhaval and Sheetal Shah, Kaushik and Artiben Shah,
+    Naresh and Vaishaliben Patel. Blocking on the number would have turned
+    away six real guests in order to catch two duplicates.
+
+    Names are compared loosely, because the same broker typing the same client
+    in twice is precisely the case this exists for.
+
+    Only phone is matched. Email is not a pretix question — it lives on the
+    order rather than the answers — so a registration made with an email and
+    no number is not checked. Saying so beats a branch that looks like it
+    works and never fires.
+    """
+    key = " ".join((name or "").lower().split())
+    if not key or not phone:
+        return None
+    try:
+        ident = {v: k for k, v in pretix.questions().items()}
+        dead = pretix.order_status()
+        for p in pretix.positions(subevent_id=subevent_id):
+            if p.get("canceled") or dead.get(p.get("order")) in ("c", "e"):
+                continue
+            if " ".join((p.get("attendee_name") or "").lower().split()) != key:
+                continue
+            a = {ident.get(x["question"]): x["answer"] for x in p.get("answers", [])}
+            if re.sub(r"\D", "", a.get("client_phone") or "")[-10:] == phone:
+                return p.get("order")
+    except Exception as e:
+        print(f"duplicate check skipped ({type(e).__name__}: {str(e)[:150]})",
+              flush=True)
+    return None
+
+
 class Registration(BaseModel):
     subevent: int
     name: str
@@ -319,6 +356,23 @@ def register(body: Registration, request: Request, authorization: str = Header(N
         raise HTTPException(
             400, "Give a mobile number or an email address — without one of "
                  "them the client cannot be sent their pass")
+
+    # Already registered? Refuse rather than send a second pass.
+    #
+    # Matched on phone AND name, never phone alone. Of the six repeated numbers
+    # in the real list, three were couples sharing a handset — Dhaval and
+    # Sheetal Shah, Kaushik and Artiben Shah, Naresh and Vaishaliben Patel.
+    # Blocking on the number would have turned away six real guests to catch
+    # two duplicates.
+    #
+    # Fails open. This prevents a wasted message; it is not worth refusing a
+    # registration over. If the lookup breaks, the broker gets today's
+    # behaviour rather than an error.
+    existing = _already_registered(body.subevent, name, phone)
+    if existing:
+        raise HTTPException(409, f"{name} is already registered for this event "
+                                 f"— reference {existing}. The pass was sent "
+                                 f"when they were first registered.")
 
     ev = pretix.subevent(body.subevent)
     details = db.event_details(body.subevent)
