@@ -64,8 +64,9 @@
     <p class="denom" id="dSub"></p>
 
     <div class="figs" id="figs"></div>
+    <p class="hint" id="hint">Choose a number above to see those people.</p>
 
-    <div class="card">
+    <div class="card" id="brokerCard" hidden>
       <h2>By broker</h2>
       <div class="tblwrap">
         <table>
@@ -79,8 +80,8 @@
       <div class="empty" id="brokersEmpty" hidden>Nobody has been invited yet.</div>
     </div>
 
-    <div class="card">
-      <h2>Every invite</h2>
+    <div class="card" id="peopleCard" hidden>
+      <h2 id="peopleTitle">Every invite</h2>
       <div class="srow" style="margin-bottom:12px">
         <div class="field">
           <label for="q">Find a person</label>
@@ -178,7 +179,7 @@
   async function load() {
     if (!current) return;
     data = await JSL.get('/api/stats?subevent=' + current);
-    figs(data); brokers(data); people(data, $('q').value);
+    render(data);
   }
 
   // Every tile is a filter. A number on a dashboard that cannot be opened is
@@ -190,7 +191,10 @@
     no_show:    p => !p.attended,
     interested: p => p.interested
   };
-  let filter = 'interested';
+  // Nothing is chosen on arrival. The page opens as five numbers; a table
+  // appears only when somebody asks for one. A screen that shows everything
+  // at once makes the reader do the filtering.
+  let filter = null;
 
   function figs(d) {
     const cards = [
@@ -207,6 +211,8 @@
        d.attended ? `of ${d.attended} who came` : 'after the follow-up',
        d.interested ? 'opp' : '']
     ];
+    cards.push(['brokers', 'By broker', d.brokers.length,
+                'who invited whom', '']);
     $('figs').innerHTML = cards.map(([id, k, v, s, cls]) => `
       <button class="fig${filter === id ? ' sel' : ''}" data-filter="${id}">
         <div class="k">${k}</div>
@@ -217,10 +223,29 @@
   $('figs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-filter]');
     if (!b || !data) return;
-    filter = b.dataset.filter;
-    figs(data);
-    people(data, $('q').value);
+    // Clicking the chosen one again closes it, so the page can be put back
+    // to five numbers without reloading.
+    filter = filter === b.dataset.filter ? null : b.dataset.filter;
+    render(data);
   });
+
+  function render(d) {
+    figs(d);
+    const showBrokers = filter === 'brokers';
+    const showPeople = !!filter && !showBrokers;
+    $('brokerCard').hidden = !showBrokers;
+    $('peopleCard').hidden = !showPeople;
+    $('hint').hidden = !!filter;
+    if (showBrokers) brokers(d);
+    if (showPeople) {
+      $('peopleTitle').textContent = TITLE[filter] || 'Every invite';
+      people(d, $('q').value);
+    }
+  }
+
+  const TITLE = {all: 'Everyone registered', sent: 'People the pass reached',
+                 attended: 'People who came', no_show: 'People who did not come',
+                 interested: 'People who asked to be contacted'};
 
   function brokers(d) {
     const max = Math.max(1, ...d.brokers.map(b => b.registered));
@@ -307,7 +332,7 @@
     }
   });
 
-  $('q').addEventListener('input', () => data && people(data, $('q').value));
+  $('q').addEventListener('input', () => data && filter && people(data, $('q').value));
 
   // --- boot --------------------------------------------------------------
   (async function () {
