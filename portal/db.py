@@ -302,6 +302,41 @@ def record_reminder(order_code, template, ok, detail=""):
         return False
 
 
+def followup_sent_at(template):
+    """{order_code: when we sent them this template}.
+
+    A reply only means something relative to the message it answers. Without
+    this the poller counted any inbound WhatsApp a contact had ever sent —
+    and most of these people are existing clients with years of history — so
+    the dashboard reported seventeen interested when three had tapped.
+    """
+    if not available():
+        return {}
+    try:
+        with _cur() as c:
+            c.execute("SELECT order_code, sent_at FROM reminders "
+                      "WHERE template = %s AND ok", (template,))
+            return {r["order_code"]: r["sent_at"] for r in c.fetchall()}
+    except Exception as ex:
+        print(f"interest: could not read when the follow-up was sent "
+              f"({type(ex).__name__}: {ex})", flush=True)
+        raise
+
+
+def clear_interest(subevent_id):
+    """Drop what was recorded for one event, so a corrected run starts clean."""
+    if not available():
+        return 0
+    try:
+        with _cur() as c:
+            c.execute("DELETE FROM interest WHERE subevent_id = %s", (subevent_id,))
+            return c.rowcount
+    except Exception as ex:
+        print(f"interest: could not clear {subevent_id}: "
+              f"{type(ex).__name__}: {ex}", flush=True)
+        return 0
+
+
 def record_interest(order_code, *, subevent_id, phone, event_type, body, replied_at):
     """Remember that someone answered the follow-up.
 

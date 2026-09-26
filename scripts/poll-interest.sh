@@ -19,5 +19,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUBEVENT="${1:-1}"
 cd "$ROOT/deploy"
 printf '\n===== %s =====\n' "$(date -Is)"
+# --template matters: each person's own send time is the cut-off for what
+# counts as a reply. Without it the poller counted every inbound message a
+# contact had ever sent, and most of these are clients of many years.
 exec docker compose exec -T portal python - --subevent "$SUBEVENT" --quiet \
+    --template "${2:-jsl_investment_event_followup}" \
     < "$ROOT/scripts/read-interest.py"

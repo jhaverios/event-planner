@@ -36,8 +36,15 @@ OUTBOUND = {"broadcastMessage", "ticket", "sessionMessage"}
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--subevent", type=int, default=int(os.environ.get("INTEREST_SUBEVENT") or 0))
-ap.add_argument("--since", default="", help="ISO date, e.g. 2026-09-26. Anything "
-                                            "earlier is ignored.")
+ap.add_argument("--template", default="jsl_investment_event_followup",
+                help="the template whose replies these are. Each person's own "
+                     "send time becomes the cut-off for what counts.")
+ap.add_argument("--since", default="",
+                help="an extra floor, ISO date. The per-person send time is "
+                     "used regardless; this only tightens it further.")
+ap.add_argument("--reset", action="store_true",
+                help="clear what was recorded for this event first, so a "
+                     "corrected run does not leave wrong rows behind")
 ap.add_argument("--attended", action="store_true", default=True,
                 help="only people who came (the follow-up's audience)")
 ap.add_argument("--everyone", action="store_true", help="every registration instead")
@@ -75,7 +82,24 @@ for p in pretix.positions(subevent_id=a.subevent):
                        phone[-12:] if phone.startswith("91") else f"91{phone[-10:]}",
                        ans.get("broker_code") or ""))
 
-known = {} if a.recheck_known else db.interest_for(a.subevent)
+if a.reset and not a.no_record:
+    print(f"cleared {db.clear_interest(a.subevent)} previously recorded row(s)\n",
+          file=sys.stderr)
+
+# A reply only means something relative to the message it answers. Counting
+# any inbound message a contact ever sent turned years of ordinary client
+# conversation into "interested in the Contra Fund".
+try:
+    sent_at = db.followup_sent_at(a.template)
+except Exception as e:
+    sys.exit(f"cannot read when {a.template} was sent ({type(e).__name__}: {e}).\n"
+             "Refusing to guess: without it every old message counts as interest.")
+if not sent_at:
+    sys.exit(f"no successful send of {a.template} is recorded, so there is "
+             f"nothing for a reply to be a reply to. Send it first, or pass "
+             f"--template with the name that was actually used.")
+
+known = {} if (a.recheck_known or a.reset) else db.interest_for(a.subevent)
 if known:
     people = [t for t in people if t[0] not in known]
 
@@ -83,7 +107,7 @@ print(f"\nreading {len(people)} conversation(s)"
       + (f", {len(known)} already answered" if known else "")
       + (f" since {a.since}" if a.since else " (all history)") + "\n")
 
-interested, quiet, unreadable = [], 0, 0
+interested, quiet, unreadable, no_send = [], 0, 0, 0
 for ref, name, phone, broker in people:
     try:
         r = httpx.get(f"{config.WATI_BASE}/api/v1/getMessages/{phone}",
@@ -98,9 +122,18 @@ for ref, name, phone, broker in people:
         time.sleep(a.pause)
         continue
 
+    # After we messaged THEM, not after some global date.
+    floor = sent_at.get(ref)
+    if floor is None:
+        no_send += 1
+        time.sleep(a.pause)
+        continue
+    cut = floor.isoformat() if hasattr(floor, "isoformat") else str(floor)
+    if a.since and a.since > cut:
+        cut = a.since
     replies = [m for m in items
                if m.get("eventType") not in OUTBOUND
-               and (not a.since or (m.get("created") or "") >= a.since)]
+               and (m.get("created") or "") > cut]
     if replies:
         newest = max(replies, key=lambda m: m.get("created") or "")
         for m in replies:
@@ -126,12 +159,13 @@ if not a.no_record and interest_missing:
           "deploy/postgres/directory-schema.sql, or nothing reaches the "
           "dashboard", file=sys.stderr)
 
-if a.quiet and not interested and not unreadable:
+if a.quiet and not interested and not unreadable and not a.reset:
     # Nothing new. A scheduled run that prints a report every half hour is a
     # log nobody reads, which means the run that mattered goes unnoticed.
     raise SystemExit(0)
 
 print(f"\n{len(interested)} replied · {quiet} silent"
+      + (f" · {no_send} never sent the follow-up" if no_send else "")
       + (f" · {unreadable} unreadable" if unreadable else ""))
 if interested:
     print("\nphone,name,reference,broker")
