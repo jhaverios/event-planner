@@ -84,14 +84,15 @@
       <div class="srow" style="margin-bottom:12px">
         <div class="field">
           <label for="q">Find a person</label>
-          <input type="text" id="q" placeholder="Name, reference or broker code" autocomplete="off">
+          <input type="text" id="q" placeholder="Name, number, email, reference or broker" autocomplete="off">
         </div>
+        <div class="listing" id="listing"></div>
       </div>
       <div class="tblwrap">
         <table>
           <thead><tr>
-            <th>Client</th><th>Invited by</th><th>Reference</th>
-            <th>WhatsApp</th><th>Email</th><th>At the door</th><th>Interest</th><th></th>
+            <th>Client</th><th>WhatsApp</th><th>Email</th><th>Reference</th>
+            <th>At the door</th><th>Interest</th><th></th>
           </tr></thead>
           <tbody id="people"></tbody>
         </table>
@@ -180,27 +181,46 @@
     figs(data); brokers(data); people(data, $('q').value);
   }
 
+  // Every tile is a filter. A number on a dashboard that cannot be opened is
+  // a number somebody has to go and reconstruct by hand somewhere else.
+  const FILTERS = {
+    all:        p => true,
+    sent:       p => p.whatsapp_ok || p.email_ok,
+    attended:   p => p.attended,
+    no_show:    p => !p.attended,
+    interested: p => p.interested
+  };
+  let filter = 'interested';
+
   function figs(d) {
     const cards = [
-      ['Invited', d.total, 'across all brokers', ''],
-      ['Messages sent', d.sent_ok, d.sent_failed ? `${d.sent_failed} failed` : 'none failed',
+      ['all', 'Invited', d.total, 'everyone registered', ''],
+      ['sent', 'Messages sent', d.sent_ok,
+       d.sent_failed ? `${d.sent_failed} failed` : 'none failed',
        d.sent_failed ? 'warn' : 'good'],
-      ['Turned up', d.attended, `of ${d.total} invited`, d.attended ? 'good' : ''],
-      ['No-show', d.no_show, d.total ? `${100 - d.rate}% of the room` : '—',
-       d.no_show ? 'warn' : ''],
-      ['Turnout', d.total ? d.rate + '%' : '—',
-       d.total ? `${d.attended} of ${d.total}` : 'not started',
-       !d.total ? '' : d.rate >= 70 ? 'good' : d.rate >= 40 ? 'opp' : 'warn'],
-      // The number the desk actually acts on: who asked to be called back.
-      ['Interested', d.interested || 0,
+      ['attended', 'Turned up', d.attended, `of ${d.total} invited`,
+       d.attended ? 'good' : ''],
+      ['no_show', 'Did not come', d.no_show,
+       d.total ? `${100 - d.rate}% of the room` : '—', d.no_show ? 'warn' : ''],
+      // The one the desk acts on: who asked to be called back.
+      ['interested', 'Interested', d.interested || 0,
        d.attended ? `of ${d.attended} who came` : 'after the follow-up',
        d.interested ? 'opp' : '']
     ];
-    $('figs').innerHTML = cards.map(([k, v, s, cls]) => `
-      <div class="fig"><div class="k">${k}</div>
+    $('figs').innerHTML = cards.map(([id, k, v, s, cls]) => `
+      <button class="fig${filter === id ? ' sel' : ''}" data-filter="${id}">
+        <div class="k">${k}</div>
         <div class="v ${cls}">${JSL.esc(v)}</div>
-        <div class="s">${JSL.esc(s)}</div></div>`).join('');
+        <div class="s">${JSL.esc(s)}</div></button>`).join('');
   }
+
+  $('figs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-filter]');
+    if (!b || !data) return;
+    filter = b.dataset.filter;
+    figs(data);
+    people(data, $('q').value);
+  });
 
   function brokers(d) {
     const max = Math.max(1, ...d.brokers.map(b => b.registered));
@@ -224,22 +244,37 @@
     return '<span class="chip">· no record</span>';
   }
 
-  function people(d, filter) {
-    const f = (filter || '').trim().toLowerCase();
-    const rows = d.people.filter(p => !f ||
+  const LABEL = {all: 'everyone registered', sent: 'people the pass reached',
+                 attended: 'people who came', no_show: 'people who did not come',
+                 interested: 'people who asked to be contacted'};
+
+  function people(d, query) {
+    const f = (query || '').trim().toLowerCase();
+    const keep = FILTERS[filter] || FILTERS.all;
+    const rows = d.people.filter(keep).filter(p => !f ||
       p.name.toLowerCase().includes(f) ||
       (p.reference || '').toLowerCase().includes(f) ||
+      (p.phone || '').includes(f) ||
+      (p.email || '').toLowerCase().includes(f) ||
       (p.broker || '').toLowerCase().includes(f));
+    $('listing').textContent = `${rows.length} ${LABEL[filter] || ''}`
+      + (f ? ` matching "${$('q').value}"` : '');
     $('peopleEmpty').hidden = rows.length > 0;
     $('peopleEmpty').textContent = d.people.length
-      ? 'Nobody matches that.' : 'Nobody has been invited yet.';
+      ? 'Nobody here matches that.' : 'Nobody has been invited yet.';
     $('people').innerHTML = rows.map(p => `
       <tr>
-        <td>${JSL.esc(p.name)}<div class="sub">${JSL.esc(p.phone || p.email || '')}</div></td>
-        <td>${JSL.esc(p.broker)}</td>
+        <td>${JSL.esc(p.name)}<div class="sub">invited by ${JSL.esc(p.broker)}</div></td>
+        <td>${p.phone
+              ? `<a class="contact" href="https://wa.me/${JSL.esc(String(p.phone).replace(/\D/g, ''))}"
+                    target="_blank" rel="noopener">${JSL.esc(p.phone)}</a>`
+              : '<span class="sub">no number</span>'}
+            <div class="sub">${chan(p.whatsapp_ok, p.whatsapp_detail)}</div></td>
+        <td>${p.email
+              ? `<a class="contact" href="mailto:${JSL.esc(p.email)}">${JSL.esc(p.email)}</a>`
+              : '<span class="sub">no email</span>'}
+            <div class="sub">${chan(p.email_ok, p.email_detail)}</div></td>
         <td class="num ref">${JSL.esc(p.reference || '—')}</td>
-        <td>${chan(p.whatsapp_ok, p.whatsapp_detail)}</td>
-        <td>${chan(p.email_ok, p.email_detail)}</td>
         <td>${p.attended
               ? '<span class="chip ok">✓ checked in</span>'
               : '<span class="chip">· not yet</span>'}</td>

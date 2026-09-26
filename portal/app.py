@@ -466,7 +466,10 @@ def stats(request: Request, subevent: int = Query(...),
     ident = {v: k for k, v in pretix.questions().items()}
     rows = pretix.positions(subevent_id=subevent)
     sent = db.deliveries_for(subevent)
-    dead = pretix.order_status()
+    # One read of /orders/ gives both the status and the email address, which
+    # lives on the order rather than on an answer.
+    orders = pretix.orders_index()
+    dead = {k: v["status"] for k, v in orders.items()}
     # Filled by scripts/read-interest.py, never by calling WATI here. Drawing
     # a page must not depend on someone else's API being up.
     keen = db.interest_for(subevent)
@@ -498,7 +501,11 @@ def stats(request: Request, subevent: int = Query(...),
                        "reference": p.get("order"),
                        "broker": code,
                        "phone": answers.get("client_phone") or "",
-                       "email": d.get("email") or "",
+                       # deliveries only has rows for registrations made after
+                       # that table existed; pretix has it for all of them.
+                       "email": (d.get("email")
+                                 or (orders.get(p.get("order")) or {}).get("email")
+                                 or ""),
                        "rsvp": state,
                        "attended": came,
                        # None means we have no record either way — an order

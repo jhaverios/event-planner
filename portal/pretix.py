@@ -126,6 +126,19 @@ def order_status():
     a cancelled order may be counted for one page load — which is a cosmetic
     wrong answer rather than no answer at all.
     """
+    return {k: v["status"] for k, v in orders_index().items()}
+
+
+def orders_index():
+    """{order_code: {status, email}} — one read of /orders/ serving both needs.
+
+    The email lives on the order rather than on a question, so this is the only
+    place it can come from. Fetching it separately would double a call the
+    dashboard already makes on every render.
+
+    Never raises, for the same reason order_status does not: this refines what
+    a page shows, and must not be able to stop the page showing it.
+    """
     out, page = {}, 1
     try:
         with _client() as c:
@@ -134,12 +147,13 @@ def order_status():
                 r.raise_for_status()
                 d = r.json()
                 for o in d["results"]:
-                    out[o["code"]] = o.get("status")
+                    out[o["code"]] = {"status": o.get("status"),
+                                      "email": (o.get("email") or "").strip()}
                 if not d.get("next"):
                     break
                 page += 1
     except Exception as e:
-        print(f"pretix: could not read order statuses "
+        print(f"pretix: could not read orders "
               f"({type(e).__name__}: {str(e)[:300]}) — "
               f"cancelled orders may be counted until this is fixed", flush=True)
         return {}
