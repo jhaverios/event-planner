@@ -5,6 +5,8 @@ the variable `qr_url`, so each recipient gets their own QR from one call. The
 parameter names below were read back from getMessageTemplates, not assumed —
 the body text stores positional tokens while the API addresses them by name.
 """
+import re
+
 import httpx
 
 import config
@@ -19,6 +21,7 @@ def configured():
 BODY_PARAMS = ("name", "event", "datetime", "venue", "reference")
 _param_cache = {}
 _all_cache = {}
+_header_cache = {}
 
 
 def template_params(template):
@@ -54,23 +57,60 @@ def template_params(template):
     return names
 
 
-def send_template(*, phone, template, values, qr_url=None,
+def header_param(template):
+    """The name of the template's header variable, or None if it has none.
+
+    Taken from the stored header link: "{{qr_url}}" means the header is filled
+    by a parameter called qr_url. Assuming the name is always qr_url was wrong
+    the first time it mattered — jsl_investment_event_followup stores
+    "{{doc_url}}", and zipping three values against four slot names silently
+    dropped the document, which WATI rejects outright.
+    """
+    if template in _header_cache:
+        return _header_cache[template]
+    name = None
+    try:
+        r = httpx.get(f"{config.WATI_BASE}/api/v1/getMessageTemplates",
+                      params={"pageSize": 80},
+                      headers={"Authorization": f"Bearer {config.WATI_TOKEN}"},
+                      timeout=25.0)
+        r.raise_for_status()
+        for t in r.json().get("messageTemplates", []):
+            if t.get("elementName") == template:
+                link = ((t.get("header") or {}).get("link") or "").strip()
+                m = re.fullmatch(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}", link)
+                name = m.group(1) if m else None
+                break
+    except Exception as e:
+        print(f"wati: could not read the header of {template} "
+              f"({type(e).__name__})", flush=True)
+    _header_cache[template] = name
+    return name
+
+
+def body_params(template):
+    """The template's body slots, in order, with the header's own slot removed."""
+    head = header_param(template)
+    return [n for n in template_params(template) if n != head]
+
+
+def send_template(*, phone, template, values, header_value=None,
                   broadcast_prefix="msg", reference=""):
     """Send any approved template. Returns (ok, detail); never raises.
 
-    The slot names come from WATI, the values from the caller, zipped in order.
-    qr_url is appended only when the template actually declares it — the
-    follow-up carries a fixed document URL in its header and takes no header
-    parameter at all, so sending one would be rejected.
+    Slot names come from WATI, values from the caller, zipped in order. The
+    header's own parameter is supplied separately because it is not part of
+    the body and its name differs per template.
     """
     if not configured():
         return False, "WATI is not configured"
-    names = [n for n in template_params(template) if n != "qr_url"]
+    names = body_params(template)
     if not names:                      # unreadable; fall back to the pass shape
         names = list(BODY_PARAMS)[:len(values)]
     params = [{"name": k, "value": v} for k, v in zip(names, values)]
-    if qr_url is not None and "qr_url" in template_params(template):
-        params.append({"name": "qr_url", "value": qr_url})
+    head = header_param(template)
+    if head and header_value:
+        params.append({"name": head, "value": header_value})
     body = {"template_name": template,
             "broadcast_name": f"{broadcast_prefix}_{reference or 'bulk'}",
             "parameters": params}

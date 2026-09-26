@@ -45,6 +45,10 @@ ap.add_argument("--attended", action="store_true",
                 help="only people whose pass was scanned at the door")
 ap.add_argument("--no-shows", action="store_true",
                 help="only people who registered and did not come")
+ap.add_argument("--header", default=os.environ.get("REMINDER_HEADER", ""),
+                help="value for the template's header variable, e.g. the "
+                     "document URL for the follow-up. The parameter's name is "
+                     "read from the template, not assumed.")
 ap.add_argument("--values",
                 help="pipe-separated values for a template whose slots are the "
                      "same for everyone, e.g. the post-event follow-up: "
@@ -94,18 +98,24 @@ if a.attended and a.no_shows:
     sys.exit("--attended and --no-shows are opposites; pick one")
 fixed = [v.strip() for v in a.values.split("|")] if a.values else None
 if fixed:
-    got = [n for n in wati.template_params(a.template) if n != "qr_url"]
+    head = wati.header_param(a.template)
+    got = wati.body_params(a.template)
     if got and len(got) != len(fixed):
-        sys.exit(f"{a.template} takes {len(got)} values ({', '.join(got)}) "
+        sys.exit(f"{a.template} takes {len(got)} body values ({', '.join(got)}) "
                  f"but {len(fixed)} were given. WATI rejects the send outright "
                  f"when they do not match, so this stops here rather than "
                  f"failing once per person.")
+    if head and not a.header:
+        sys.exit(f"{a.template} fills its header from a parameter named "
+                 f"'{head}' — pass --header '<url>'. Without it the send is "
+                 f"rejected for every recipient.")
 
 print(f"\n{ev['name']}\n  {when} · {venue}"
       f"\n  template: {a.template}"
       f"\n  mode: {'SENDING' if a.send else 'dry run — nothing will be sent'}"
       + f"\n  audience: {'attendees only' if a.attended else 'no-shows only' if a.no_shows else 'everyone registered'}"
       + (f"\n  values: {' | '.join(fixed)}" if fixed else "")
+      + (f"\n  header: {a.header}" if a.header else "")
       + (f"\n  limited to: {', '.join(sorted(only))}" if only else "") + "\n")
 
 sent = failed = 0
@@ -156,6 +166,7 @@ for p in pretix.positions(subevent_id=a.subevent):
         # a fixed URL rather than a parameter.
         ok, detail = wati.send_template(
             phone=phone, template=a.template, values=fixed,
+            header_value=a.header or None,
             broadcast_prefix="followup", reference=order)
     else:
         ok, detail = wati.send_pass(
