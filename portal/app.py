@@ -425,6 +425,7 @@ def overview(request: Request, authorization: str = Header(None)):
     ident = {v: k for k, v in pretix.questions().items()}
     details = db.all_event_details()
     dead = pretix.order_status()
+    keen = db.interest_counts()
     cards = []
     for ev in pretix.subevents():
         rows = [p for p in pretix.positions(subevent_id=ev["id"])
@@ -451,6 +452,7 @@ def overview(request: Request, authorization: str = Header(None)):
                                    if r.get("whatsapp_ok") is False),
             "email_sent": sum(1 for r in sent.values() if r.get("email_ok")),
             "email_failed": sum(1 for r in sent.values() if r.get("email_ok") is False),
+            "interested": keen.get(ev["id"], 0),
             "rate": round(100 * attended / len(rows)) if rows else 0,
         })
     cards.sort(key=lambda c: c["date_from"])
@@ -465,6 +467,9 @@ def stats(request: Request, subevent: int = Query(...),
     rows = pretix.positions(subevent_id=subevent)
     sent = db.deliveries_for(subevent)
     dead = pretix.order_status()
+    # Filled by scripts/read-interest.py, never by calling WATI here. Drawing
+    # a page must not depend on someone else's API being up.
+    keen = db.interest_for(subevent)
 
     scope = who["subject"] if who["role"] == "broker" else None
     per, total, attended, rsvp = {}, 0, 0, {"yes": 0, "no": 0, "none": 0}
@@ -488,6 +493,7 @@ def stats(request: Request, subevent: int = Query(...),
         b["registered"] += 1
         b["attended"] += came
         d = sent.get(p.get("order")) or {}
+        k = keen.get(p.get("order")) or {}
         people.append({"name": p.get("attendee_name") or "—",
                        "reference": p.get("order"),
                        "broker": code,
@@ -500,8 +506,13 @@ def stats(request: Request, subevent: int = Query(...),
                        "whatsapp_ok": d.get("whatsapp_ok"),
                        "whatsapp_detail": d.get("whatsapp_detail") or "",
                        "email_ok": d.get("email_ok"),
-                       "email_detail": d.get("email_detail") or ""})
+                       "email_detail": d.get("email_detail") or "",
+                       "interested": bool(k),
+                       "interest_at": (k.get("replied_at").isoformat()
+                                       if k.get("replied_at") else ""),
+                       "interest_text": k.get("body") or ""})
 
+    interested = sum(1 for pp in people if pp["interested"])
     names = db.broker_names([c for c in per if c != "—"])
     for code, b in per.items():
         b["name"] = names.get(code, code)
@@ -516,6 +527,7 @@ def stats(request: Request, subevent: int = Query(...),
                if k in db.DETAIL_FIELDS})
     return {"scope": who["role"], "subevent": ev,
             "total": total, "attended": attended, "no_show": total - attended,
+            "interested": interested,
             "rate": round(100 * attended / total) if total else 0,
             "rsvp": rsvp,
             "sent_ok": sum(1 for p in people

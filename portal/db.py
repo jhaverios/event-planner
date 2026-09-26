@@ -29,7 +29,7 @@ def available():
 # Every table the portal writes to. Kept here rather than inferred, so a table
 # added to the schema file but never created on a running machine is caught.
 EXPECTED_TABLES = ("brokers", "clients", "import_batches", "event_details",
-                   "deliveries", "reminders")
+                   "deliveries", "reminders", "interest")
 
 
 def missing_tables():
@@ -300,6 +300,61 @@ def record_reminder(order_code, template, ok, detail=""):
         print(f"reminders: could not record {order_code}: "
               f"{type(ex).__name__}: {ex}", flush=True)
         return False
+
+
+def record_interest(order_code, *, subevent_id, phone, event_type, body, replied_at):
+    """Remember that someone answered the follow-up.
+
+    Upserts on the order code: the admin's question is whether this person
+    responded, not how many times. Never raises — this is a poller filling in
+    a column, and losing a row must not stop the rest of the run.
+    """
+    if not available() or not order_code:
+        return False
+    try:
+        with _cur() as c:
+            c.execute(
+                """INSERT INTO interest
+                     (order_code, subevent_id, phone, event_type, body, replied_at)
+                   VALUES (%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (order_code) DO UPDATE SET
+                     event_type = EXCLUDED.event_type,
+                     body       = EXCLUDED.body,
+                     replied_at = EXCLUDED.replied_at,
+                     seen_at    = now()""",
+                (order_code, subevent_id, phone, event_type,
+                 (body or "")[:500] or None, replied_at))
+        return True
+    except Exception as ex:
+        print(f"interest: could not record {order_code}: "
+              f"{type(ex).__name__}: {ex}", flush=True)
+        return False
+
+
+def interest_for(subevent_id):
+    """{order_code: row} for one event. Empty on any failure, deliberately:
+    a missing column on the dashboard beats no dashboard."""
+    if not available():
+        return {}
+    try:
+        with _cur() as c:
+            c.execute("SELECT * FROM interest WHERE subevent_id = %s", (subevent_id,))
+            return {r["order_code"]: dict(r) for r in c.fetchall()}
+    except Exception:
+        return {}
+
+
+def interest_counts():
+    """{subevent_id: how many replied} for the event cards."""
+    if not available():
+        return {}
+    try:
+        with _cur() as c:
+            c.execute("SELECT subevent_id, count(*) AS n FROM interest "
+                      "GROUP BY subevent_id")
+            return {r["subevent_id"]: r["n"] for r in c.fetchall()}
+    except Exception:
+        return {}
 
 
 def deliveries_for(subevent_id):

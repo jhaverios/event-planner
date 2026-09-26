@@ -42,6 +42,8 @@ ap.add_argument("--attended", action="store_true", default=True,
                 help="only people who came (the follow-up's audience)")
 ap.add_argument("--everyone", action="store_true", help="every registration instead")
 ap.add_argument("--pause", type=float, default=0.25)
+ap.add_argument("--no-record", action="store_true",
+                help="print only; do not write to the dashboard")
 a = ap.parse_args()
 
 if not a.subevent:
@@ -50,6 +52,7 @@ if not wati.configured():
     sys.exit("WATI is not configured in this container")
 
 db.init()
+interest_missing = "interest" in db.missing_tables()
 ident = {v: k for k, v in pretix.questions().items()}
 dead = pretix.order_status()
 
@@ -88,14 +91,29 @@ for ref, name, phone, broker in people:
                if m.get("eventType") not in OUTBOUND
                and (not a.since or (m.get("created") or "") >= a.since)]
     if replies:
+        newest = max(replies, key=lambda m: m.get("created") or "")
         for m in replies:
             txt = (m.get("finalText") or "").replace("\n", " ")[:60]
             print(f"  >  {name[:26]:26} {phone}  [{ref}] broker={broker}")
             print(f"     {m.get('created','')[:19]}  {m.get('eventType')}  {txt}")
         interested.append((ref, name, phone, broker))
+        if not a.no_record:
+            # Onto the admin dashboard, so nobody has to open WATI to find out
+            # who asked to be called. The page reads this table; it never calls
+            # WATI itself.
+            db.record_interest(
+                ref, subevent_id=a.subevent, phone=phone,
+                event_type=newest.get("eventType") or "",
+                body=(newest.get("finalText") or "").strip(),
+                replied_at=(newest.get("created") or None))
     else:
         quiet += 1
     time.sleep(a.pause)
+
+if not a.no_record and interest_missing:
+    print("\nthe interest table does not exist yet — re-apply "
+          "deploy/postgres/directory-schema.sql, or nothing reaches the "
+          "dashboard", file=sys.stderr)
 
 print(f"\n{len(interested)} replied · {quiet} silent"
       + (f" · {unreadable} unreadable" if unreadable else ""))

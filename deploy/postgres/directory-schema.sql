@@ -132,3 +132,24 @@ CREATE TABLE IF NOT EXISTS reminders (
 CREATE UNIQUE INDEX IF NOT EXISTS reminders_once_idx
     ON reminders (order_code, template) WHERE ok;
 CREATE INDEX IF NOT EXISTS reminders_order_idx ON reminders (order_code);
+
+-- Who answered the follow-up, so the admin page can show it without asking
+-- WATI at render time.
+--
+-- The dashboard must never make fifty API calls to draw a page: a slow or
+-- rate-limited WATI would become a broken dashboard, which is precisely the
+-- fault that took /api/overview down the day before the event. The poller
+-- writes here; the page reads here.
+--
+-- One row per registration, latest reply winning, because the question the
+-- admin asks is "did this person respond", not "how many times".
+CREATE TABLE IF NOT EXISTS interest (
+    order_code  TEXT PRIMARY KEY,
+    subevent_id BIGINT,
+    phone       TEXT,
+    event_type  TEXT,
+    body        TEXT,
+    replied_at  TIMESTAMPTZ,
+    seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS interest_subevent_idx ON interest (subevent_id);

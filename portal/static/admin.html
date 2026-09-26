@@ -91,7 +91,7 @@
         <table>
           <thead><tr>
             <th>Client</th><th>Invited by</th><th>Reference</th>
-            <th>WhatsApp</th><th>Email</th><th>At the door</th><th></th>
+            <th>WhatsApp</th><th>Email</th><th>At the door</th><th>Interest</th><th></th>
           </tr></thead>
           <tbody id="people"></tbody>
         </table>
@@ -139,6 +139,7 @@
         <div class="nums">
           <div><div class="n">${e.registered}</div><div class="l">Invited</div></div>
           <div><div class="n">${e.attended}</div><div class="l">Turned up</div></div>
+          <div><div class="n">${e.interested || 0}</div><div class="l">Interested</div></div>
           <div><div class="n${e.whatsapp_failed || e.email_failed ? ' ' : ''}"
                     style="${e.whatsapp_failed || e.email_failed ? 'color:var(--neg)' : ''}">${
                     e.whatsapp_failed + e.email_failed}</div><div class="l">Failed</div></div>
@@ -189,7 +190,11 @@
        d.no_show ? 'warn' : ''],
       ['Turnout', d.total ? d.rate + '%' : '—',
        d.total ? `${d.attended} of ${d.total}` : 'not started',
-       !d.total ? '' : d.rate >= 70 ? 'good' : d.rate >= 40 ? 'opp' : 'warn']
+       !d.total ? '' : d.rate >= 70 ? 'good' : d.rate >= 40 ? 'opp' : 'warn'],
+      // The number the desk actually acts on: who asked to be called back.
+      ['Interested', d.interested || 0,
+       d.attended ? `of ${d.attended} who came` : 'after the follow-up',
+       d.interested ? 'opp' : '']
     ];
     $('figs').innerHTML = cards.map(([k, v, s, cls]) => `
       <div class="fig"><div class="k">${k}</div>
@@ -238,6 +243,9 @@
         <td>${p.attended
               ? '<span class="chip ok">✓ checked in</span>'
               : '<span class="chip">· not yet</span>'}</td>
+        <td>${p.interested
+              ? `<span class="chip ok" title="${JSL.esc(p.interest_text || '')}">★ interested</span>`
+              : '<span class="chip">· —</span>'}</td>
         <td class="r">${p.reference
               ? `<button class="linkbtn" data-cancel="${JSL.esc(p.reference)}"
                       data-who="${JSL.esc(p.name)}">Remove</button>`
