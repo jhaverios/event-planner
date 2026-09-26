@@ -44,6 +44,12 @@ ap.add_argument("--everyone", action="store_true", help="every registration inst
 ap.add_argument("--pause", type=float, default=0.25)
 ap.add_argument("--no-record", action="store_true",
                 help="print only; do not write to the dashboard")
+ap.add_argument("--recheck-known", action="store_true",
+                help="also poll people already recorded as interested. Off by "
+                     "default: once someone has answered, asking again every "
+                     "run spends calls to learn nothing.")
+ap.add_argument("--quiet", action="store_true",
+                help="print only what changed — for running on a schedule")
 a = ap.parse_args()
 
 if not a.subevent:
@@ -69,7 +75,12 @@ for p in pretix.positions(subevent_id=a.subevent):
                        phone[-12:] if phone.startswith("91") else f"91{phone[-10:]}",
                        ans.get("broker_code") or ""))
 
+known = {} if a.recheck_known else db.interest_for(a.subevent)
+if known:
+    people = [t for t in people if t[0] not in known]
+
 print(f"\nreading {len(people)} conversation(s)"
+      + (f", {len(known)} already answered" if known else "")
       + (f" since {a.since}" if a.since else " (all history)") + "\n")
 
 interested, quiet, unreadable = [], 0, 0
@@ -114,6 +125,11 @@ if not a.no_record and interest_missing:
     print("\nthe interest table does not exist yet — re-apply "
           "deploy/postgres/directory-schema.sql, or nothing reaches the "
           "dashboard", file=sys.stderr)
+
+if a.quiet and not interested and not unreadable:
+    # Nothing new. A scheduled run that prints a report every half hour is a
+    # log nobody reads, which means the run that mattered goes unnoticed.
+    raise SystemExit(0)
 
 print(f"\n{len(interested)} replied · {quiet} silent"
       + (f" · {unreadable} unreadable" if unreadable else ""))
