@@ -362,3 +362,89 @@ first pass could not reach.
 A lookup that *fails* is treated as allowed rather than blocked: a WATI hiccup must not silently
 withhold a reminder someone is expecting. The send is the real gate — WATI answers 200 with
 `result: false` when it refuses.
+
+## The post-event follow-up
+
+A second message after the event, carrying the session document and a quick-reply button, so the
+desk gets a list of warm names instead of reading fifty inboxes.
+
+### Why it is not sent from WATI's campaign builder
+
+That account holds **16,229 contacts**, and the campaign builder picks its audience from a
+dropdown. One wrong selection sends a marketing message from a regulated firm to all of them —
+a compliance incident, not an embarrassment. The audience for a post-event follow-up is knowable
+exactly: the people whose pass was scanned. So it is derived, not selected.
+
+### The template
+
+| Field | Value |
+|---|---|
+| Name | `jsl_investment_event_followup` |
+| Category | **Marketing** — not Utility |
+| Header | Document, a fixed URL under `/assets` |
+| Buttons | Quick reply: `I'm Interested` |
+| Body | `{{1}}` event · `{{2}}` date · `{{3}}` topic |
+
+**Marketing is not a choice.** "Explore whether it suits your investment goals" is lead
+generation and Meta classifies it that way whatever is selected. The consequence that matters:
+a marketing template is withheld from anyone who has opted out of marketing, and nothing in the
+send result says who. The Utility reminders reached everyone; this one will not.
+
+**The document is a fixed URL, not a variable.** `{{qr_url}}` earned its place because every
+guest needed a different image. Here everyone gets the same PDF, so a variable buys nothing but
+an unverified path. Put the file in `portal/static/assets/`, rebuild, and confirm before
+submitting — Meta fetches the URL during review, and a header link that 404s fails the whole
+message rather than just the attachment:
+
+```bash
+curl -sI https://events.jslwealth.in/assets/<file>.pdf | head -3   # wants 200
+```
+
+### Sending it
+
+```bash
+cd ~/event-planner && git pull --no-edit && cd deploy
+sudo docker compose up -d --build portal && sleep 10
+
+V='Event name|24 September 2026|what was discussed'
+
+# 1. dry run — attendees only, sends nothing
+sudo docker compose exec -T portal python - --subevent 1 \
+  --template jsl_investment_event_followup --attended --values "$V" \
+  < ~/event-planner/scripts/send-reminders.py
+
+# 2. one person, on a handset you hold
+#    …same command plus --limit 1 --send
+# 3. the rest
+#    …same command plus --send
+```
+
+`--attended` is what restricts it to people who came. Without it the message goes to no-shows
+too, thanking them for attending something they missed.
+
+The value count is checked against what WATI stores for the template before anything is sent,
+because a mismatch is rejected per message rather than once.
+
+### Reading who is interested
+
+```bash
+sudo docker compose exec -T portal python - --subevent 1 --since 2026-09-26 \
+  < ~/event-planner/scripts/read-interest.py
+```
+
+Growth has no webhooks, so replies are polled. The script does **not** filter for the event type
+of an inbound quick reply, because no one on this account had ever replied when it was written
+and that value has never been observed. It reports everything on the conversation that is not
+outbound and prints the type it finds — so the first real reply names the thing in the output
+instead of being dropped by a filter built on a guess. Once that type is known, it can be
+filtered properly.
+
+It ends with a CSV of phone, name, reference and **the broker who invited them**, so each lead
+goes back to the person who owns the relationship.
+
+### The list comes from pretix, never from WATI
+
+WATI stores a contact's name as **the phone number** until told otherwise — contact
+`917990040687` on this account has `fullName: "917990040687"`. Any personalisation drawn from
+WATI's own contact attributes would greet real clients by their number. Pretix holds the name the
+broker typed, which is why `export-attendees.py` exists.
