@@ -41,6 +41,15 @@ ap.add_argument("--send", action="store_true",
                 default=bool(os.environ.get("REMINDER_SEND")),
                 help="actually send. Without it, nothing leaves the building.")
 ap.add_argument("--template", default=config.WATI_REMINDER_TEMPLATE)
+ap.add_argument("--attended", action="store_true",
+                help="only people whose pass was scanned at the door")
+ap.add_argument("--no-shows", action="store_true",
+                help="only people who registered and did not come")
+ap.add_argument("--values",
+                help="pipe-separated values for a template whose slots are the "
+                     "same for everyone, e.g. the post-event follow-up: "
+                     "--values 'Event name|24 September 2026|what was discussed'. "
+                     "Without it the five values of the entry pass are sent.")
 ap.add_argument("--only", default=os.environ.get("REMINDER_ONLY", ""),
                 help="comma-separated references, e.g. --only ZYXJK. Use it to "
                      "prove the message renders on a handset you hold before "
@@ -81,10 +90,22 @@ except Exception as e:
              "Refusing to send, because a re-run would message everyone twice.")
 
 only = {x.strip().upper() for x in a.only.split(",") if x.strip()}
+if a.attended and a.no_shows:
+    sys.exit("--attended and --no-shows are opposites; pick one")
+fixed = [v.strip() for v in a.values.split("|")] if a.values else None
+if fixed:
+    got = [n for n in wati.template_params(a.template) if n != "qr_url"]
+    if got and len(got) != len(fixed):
+        sys.exit(f"{a.template} takes {len(got)} values ({', '.join(got)}) "
+                 f"but {len(fixed)} were given. WATI rejects the send outright "
+                 f"when they do not match, so this stops here rather than "
+                 f"failing once per person.")
 
 print(f"\n{ev['name']}\n  {when} · {venue}"
       f"\n  template: {a.template}"
       f"\n  mode: {'SENDING' if a.send else 'dry run — nothing will be sent'}"
+      + f"\n  audience: {'attendees only' if a.attended else 'no-shows only' if a.no_shows else 'everyone registered'}"
+      + (f"\n  values: {' | '.join(fixed)}" if fixed else "")
       + (f"\n  limited to: {', '.join(sorted(only))}" if only else "") + "\n")
 
 sent = failed = 0
@@ -102,6 +123,13 @@ for p in pretix.positions(subevent_id=a.subevent):
         continue
     if p.get("canceled") or status.get(order) in ("c", "e"):
         skip("cancelled or expired")
+        continue
+    came = bool(p.get("checkins"))
+    if a.attended and not came:
+        skip("did not come")
+        continue
+    if a.no_shows and came:
+        skip("attended")
         continue
     if not phone:
         skip("no mobile number on the registration")
@@ -122,10 +150,18 @@ for p in pretix.positions(subevent_id=a.subevent):
         sent += 1
         continue
 
-    ok, detail = wati.send_pass(
-        phone=phone, name=name or "there", event=line, when=when, venue=venue,
-        reference=order, qr_url=qr_url_for(p["secret"]),
-        template=a.template, broadcast_prefix="reminder")
+    if fixed is not None:
+        # Every slot identical for everyone — a follow-up addressed "Dear
+        # Investor" needs no per-person data, and the document in its header is
+        # a fixed URL rather than a parameter.
+        ok, detail = wati.send_template(
+            phone=phone, template=a.template, values=fixed,
+            broadcast_prefix="followup", reference=order)
+    else:
+        ok, detail = wati.send_pass(
+            phone=phone, name=name or "there", event=line, when=when, venue=venue,
+            reference=order, qr_url=qr_url_for(p["secret"]),
+            template=a.template, broadcast_prefix="reminder")
     recorded = db.record_reminder(order, a.template, ok, detail)
     if not recorded and ok:
         # The message went out but the row did not land. Saying so is the only

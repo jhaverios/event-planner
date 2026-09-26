@@ -18,6 +18,76 @@ def configured():
 
 BODY_PARAMS = ("name", "event", "datetime", "venue", "reference")
 _param_cache = {}
+_all_cache = {}
+
+
+def template_params(template):
+    """Every parameter name WATI stores for a template, in order.
+
+    Read back, never assumed — jsl_event_v3 names its five body slots
+    name/event/datetime/venue/reference while jsl_event_reminder_v1, built in
+    the same UI a day later, names them "1".."5". Assuming the words would have
+    sent nothing to fifty-one guests.
+
+    Returns [] when the template cannot be read, which callers treat as "use
+    what you were told".
+    """
+    if template in _all_cache:
+        return _all_cache[template]
+    names = []
+    try:
+        r = httpx.get(f"{config.WATI_BASE}/api/v1/getMessageTemplates",
+                      params={"pageSize": 80},
+                      headers={"Authorization": f"Bearer {config.WATI_TOKEN}"},
+                      timeout=25.0)
+        r.raise_for_status()
+        for t in r.json().get("messageTemplates", []):
+            if t.get("elementName") == template:
+                names = [p.get("paramName") or p.get("name")
+                         for p in (t.get("customParams") or [])]
+                names = [n for n in names if n]
+                break
+    except Exception as e:
+        print(f"wati: could not read parameters for {template} "
+              f"({type(e).__name__})", flush=True)
+    _all_cache[template] = names
+    return names
+
+
+def send_template(*, phone, template, values, qr_url=None,
+                  broadcast_prefix="msg", reference=""):
+    """Send any approved template. Returns (ok, detail); never raises.
+
+    The slot names come from WATI, the values from the caller, zipped in order.
+    qr_url is appended only when the template actually declares it — the
+    follow-up carries a fixed document URL in its header and takes no header
+    parameter at all, so sending one would be rejected.
+    """
+    if not configured():
+        return False, "WATI is not configured"
+    names = [n for n in template_params(template) if n != "qr_url"]
+    if not names:                      # unreadable; fall back to the pass shape
+        names = list(BODY_PARAMS)[:len(values)]
+    params = [{"name": k, "value": v} for k, v in zip(names, values)]
+    if qr_url is not None and "qr_url" in template_params(template):
+        params.append({"name": "qr_url", "value": qr_url})
+    body = {"template_name": template,
+            "broadcast_name": f"{broadcast_prefix}_{reference or 'bulk'}",
+            "parameters": params}
+    try:
+        r = httpx.post(f"{config.WATI_BASE}/api/v1/sendTemplateMessage",
+                       params={"whatsappNumber": phone},
+                       headers={"Authorization": f"Bearer {config.WATI_TOKEN}",
+                                "Content-Type": "application/json"},
+                       json=body, timeout=25.0)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    if r.status_code >= 400:
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    d = r.json()
+    if d.get("result") is True:
+        return True, "accepted"
+    return False, str(d.get("info") or d)[:200]
 
 
 def body_param_names(template):
