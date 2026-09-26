@@ -1,0 +1,309 @@
+{
+  "name": "W1 \u2014 Broker registers a client",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "JSL Investor Events",
+        "formDescription": "Register a client for an upcoming event. You will need their full name and mobile number.",
+        "formFields": {
+          "values": [
+            {
+              "fieldName": "broker",
+              "fieldType": "hiddenField"
+            },
+            {
+              "fieldName": "sig",
+              "fieldType": "hiddenField"
+            }
+          ]
+        },
+        "options": {
+          "path": "register",
+          "buttonLabel": "Start",
+          "appendAttribution": false,
+          "ignoreBots": true
+        }
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        300
+      ],
+      "id": "broker-opens-their-link",
+      "name": "Broker opens their link",
+      "webhookId": "b1a7f3c2-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BROKER_LINK_SECRET;\nif (!secret) throw new Error('BROKER_LINK_SECRET is not set on the n8n container.');\n\nconst inJson = $input.first().json;\nconst broker = String(inJson.broker || '').trim().toUpperCase();\nconst sig    = String(inJson.sig || '').trim();\n\nif (!broker || !sig) {\n  throw new Error('This link is incomplete. Please open the personal link that was sent to you.');\n}\nconst expected = crypto.createHmac('sha256', secret).update(broker).digest('hex').slice(0, 16);\n// Constant-time compare so the signature cannot be guessed byte by byte.\nconst a = Buffer.from(sig.padEnd(16, ' ').slice(0, 16));\nconst b = Buffer.from(expected);\nif (!crypto.timingSafeEqual(a, b)) {\n  throw new Error('This link is not valid. Please open the personal link that was sent to you.');\n}\nreturn [{ json: { broker_code: broker } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "id": "verify-the-link-signature",
+      "name": "Verify the link signature"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/subevents/?active=true&ordering=date_from",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        200
+      ],
+      "id": "load-upcoming-dates",
+      "name": "Load upcoming dates",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Pretix API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/questions/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        400
+      ],
+      "id": "load-questions",
+      "name": "Load questions",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Pretix API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const broker = $('Verify the link signature').first().json.broker_code;\nconst now = Date.now();\n\nconst subs = ($('Load upcoming dates').first().json.results || [])\n  .filter(s => s.active && new Date(s.date_from).getTime() > now)\n  .sort((a, b) => new Date(a.date_from) - new Date(b.date_from));\n\nif (!subs.length) {\n  throw new Error('There are no upcoming events open for registration right now.');\n}\n\nconst pick = (ml) => !ml ? '' : (ml.en || Object.values(ml)[0] || '');\nconst label = (s) => {\n  const d = new Date(s.date_from);\n  const opts = { timeZone: 'Asia/Kolkata' };\n  const day  = d.toLocaleDateString('en-IN', { ...opts, day: 'numeric', month: 'short' });\n  const time = d.toLocaleTimeString('en-IN', { ...opts, hour: '2-digit', minute: '2-digit' });\n  return `${pick(s.name)} \u2014 ${day}, ${time}`;\n};\n\n// Map question identifiers to ids so the order payload never hardcodes them.\nconst questions = {};\nfor (const q of ($('Load questions').first().json.results || [])) {\n  questions[q.identifier] = q.id;\n}\nfor (const needed of ['client_phone', 'broker_code', 'consent_given', 'consent_version']) {\n  if (!questions[needed]) throw new Error(`The event is missing the \"${needed}\" question. See runbook 04.`);\n}\n\nconst CONSENT_TEXT = 'The client has agreed to receive event updates from JSL Wealth on WhatsApp';\n\nconst formFields = [\n  { fieldLabel: 'Event', fieldType: 'dropdown', requiredField: true,\n    fieldOptions: { values: subs.map(s => ({ option: label(s) })) } },\n  { fieldLabel: 'Client name', fieldType: 'text', requiredField: true,\n    placeholder: 'Full name, as on their ID' },\n  { fieldLabel: 'Client mobile', fieldType: 'text', requiredField: true,\n    placeholder: '10 digits, for example 9876543210' },\n  { fieldLabel: 'Consent', fieldType: 'checkbox', requiredField: true,\n    fieldOptions: { values: [{ option: CONSENT_TEXT }] } },\n];\n\nreturn [{ json: {\n  formFields,\n  broker_code: broker,\n  questions,\n  consent_version: 'notice-v1-2026-09-21',\n  lookup: subs.map(s => ({ id: s.id, label: label(s) })),\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "id": "build-the-registration-form",
+      "name": "Build the registration form"
+    },
+    {
+      "parameters": {
+        "operation": "page",
+        "defineForm": "json",
+        "jsonOutput": "={{ $json.formFields }}",
+        "options": {
+          "formTitle": "Register a client",
+          "buttonLabel": "Register",
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        880,
+        300
+      ],
+      "id": "registration-details",
+      "name": "Registration details",
+      "webhookId": "b1a7f3c2-0000-4000-8000-000000000002"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const form  = $input.first().json;\nconst built = $('Build the registration form').first().json;\n\nconst chosen = built.lookup.find(e => e.label === form.Event);\nif (!chosen) throw new Error('Please choose an event from the list.');\n\nconst name = String(form['Client name'] || '').trim().replace(/\\s+/g, ' ');\nif (name.length < 3) throw new Error('Please enter the client\\'s full name.');\n\n// Accept 9876543210, +91 98765 43210, 09876543210, 919876543210.\nlet digits = String(form['Client mobile'] || '').replace(/\\D/g, '');\nif (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);\nif (digits.length === 11 && digits.startsWith('0'))  digits = digits.slice(1);\nif (!/^[6-9]\\d{9}$/.test(digits)) {\n  throw new Error('That does not look like an Indian mobile number. Enter 10 digits starting with 6, 7, 8 or 9.');\n}\n\n// n8n returns an unchecked required checkbox as false or an empty array.\nconst consentRaw = form.Consent;\nconst consented = Array.isArray(consentRaw) ? consentRaw.length > 0 : Boolean(consentRaw);\nif (!consented) throw new Error('The client must agree to receive WhatsApp updates before you can register them.');\n\nconst q = built.questions;\nreturn [{ json: {\n  subevent: chosen.id,\n  event_label: chosen.label,\n  attendee_name: name,\n  phone_e164: '+91' + digits,\n  broker_code: built.broker_code,\n  order_payload: {\n    status: 'p',\n    payment_provider: 'free',\n    locale: 'en',\n    send_email: false,\n    comment: `Registered by broker ${built.broker_code} via the web form`,\n    positions: [{\n      positionid: 1,\n      item: Number($env.PRETIX_ITEM_ID || 1),\n      price: '0.00',\n      attendee_name: name,\n      subevent: chosen.id,\n      answers: [\n        { question: q.client_phone,    answer: '+91' + digits,        options: [] },\n        { question: q.broker_code,     answer: built.broker_code,     options: [] },\n        { question: q.consent_given,   answer: 'true',                options: [] },\n        { question: q.consent_version, answer: built.consent_version, options: [] },\n      ],\n    }],\n  },\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "id": "check-the-details",
+      "name": "Check the details"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/orders/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.order_payload) }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ],
+      "id": "create-the-registration",
+      "name": "Create the registration",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Pretix API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Registered",
+        "completionMessage": "={{ $('Check the details').first().json.attendee_name }} is registered for {{ $('Check the details').first().json.event_label }}.\nReference: {{ $json.code }}\n\nThey will receive a WhatsApp pass with their entry QR code shortly.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        1540,
+        300
+      ],
+      "id": "confirm-to-the-broker",
+      "name": "Confirm to the broker",
+      "webhookId": "b1a7f3c2-0000-4000-8000-000000000003"
+    }
+  ],
+  "connections": {
+    "Broker opens their link": {
+      "main": [
+        [
+          {
+            "node": "Verify the link signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify the link signature": {
+      "main": [
+        [
+          {
+            "node": "Load upcoming dates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load upcoming dates": {
+      "main": [
+        [
+          {
+            "node": "Load questions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load questions": {
+      "main": [
+        [
+          {
+            "node": "Build the registration form",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build the registration form": {
+      "main": [
+        [
+          {
+            "node": "Registration details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registration details": {
+      "main": [
+        [
+          {
+            "node": "Check the details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check the details": {
+      "main": [
+        [
+          {
+            "node": "Create the registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create the registration": {
+      "main": [
+        [
+          {
+            "node": "Confirm to the broker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata"
+  }
+}

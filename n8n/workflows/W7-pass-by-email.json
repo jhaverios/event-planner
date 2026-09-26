@@ -1,0 +1,174 @@
+{
+  "name": "W7 \u2014 Send the pass by email",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "send-pass",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "id": "registration-confirmed",
+      "name": "Registration confirmed",
+      "webhookId": "d3c9a5e4-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/orders/{{ $json.body.order_code }}/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "id": "load-the-order",
+      "name": "Load the order",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XC6ptLFoididGmxb",
+          "name": "Pretix API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.PRETIX_API_BASE }}/organizers/{{ $env.PRETIX_ORGANIZER }}/events/{{ $env.PRETIX_EVENT }}/subevents/{{ $json.positions[0].subevent }}/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Host",
+              "value": "={{ $env.PRETIX_HOST }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "id": "load-the-event-date",
+      "name": "Load the event date",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XC6ptLFoididGmxb",
+          "name": "Pretix API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.BROKER_LINK_SECRET;\nconst req    = $('Registration confirmed').first().json;\nconst order  = $('Load the order').first().json;\nconst pos    = (order.positions || [])[0];\nif (!pos) throw new Error('That order has no ticket position.');\n\nconst to = (req.body?.to || req.query?.to || '').trim();\nif (!to) throw new Error('No recipient address supplied.');\n\nconst answers = {};\nfor (const a of (pos.answers || [])) answers[a.question_identifier || a.question] = a.answer;\n\n// Same signed link the WhatsApp pass will use, so both channels share one path.\nconst sig   = crypto.createHmac('sha256', secret).update('ticket:' + order.code).digest('hex').slice(0, 24);\nconst token = `${order.code}.${sig}`;\nconst base  = $env.PUBLIC_BASE_URL || 'http://localhost:5678';\nconst passUrl = `${base}/webhook/ticket?t=${token}&f=png`;\nconst pdfUrl  = `${base}/webhook/ticket?t=${token}&f=pdf`;\n\n// The QR itself, rendered from the ticket secret, for inlining in the email.\nconst qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data=${encodeURIComponent(pos.secret)}`;\n\nconst ev = $('Load the event date').first().json;\nconst pick = (ml) => !ml ? '' : (ml.en || Object.values(ml)[0] || '');\nconst when = new Date(ev.date_from).toLocaleString('en-IN', {\n  timeZone: 'Asia/Kolkata', weekday: 'long', day: 'numeric', month: 'long',\n  year: 'numeric', hour: '2-digit', minute: '2-digit',\n});\n\n// Jhaveri house style: navy structure, gold action, warm off-white ground,\n// serif display, one hairline rule. Tokens lifted from the jhaveri-os palette.\nconst html = `<!doctype html><html><body style=\"margin:0;padding:0;background:#F7F5F0;\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#F7F5F0;padding:24px 0;\">\n<tr><td align=\"center\">\n  <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:460px;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 1px 2px rgba(26,27,30,.05),0 4px 14px rgba(26,27,30,.05);\">\n    <tr><td style=\"background:#16294d;padding:16px 20px;\">\n      <span style=\"font-family:'Iowan Old Style',Palatino,Georgia,serif;font-size:17px;font-weight:600;color:#ffffff;\">Jhaveri Securities</span>\n    </td></tr>\n    <tr><td style=\"padding:22px 20px 6px 20px;font-family:'Iowan Old Style',Palatino,Georgia,serif;\">\n      <div style=\"font-size:19px;color:#1A1B1E;\">Your registration is confirmed</div>\n      <div style=\"font-size:14px;color:#6B6862;padding-top:4px;\">Hello ${pos.attendee_name}</div>\n    </td></tr>\n    <tr><td align=\"center\" style=\"padding:14px 20px;\">\n      <img src=\"${qrUrl}\" width=\"220\" height=\"220\" alt=\"Entry QR code\" style=\"display:block;border:1px solid #E6E2D8;border-radius:8px;\"/>\n      <div style=\"font-family:Georgia,serif;font-size:12.5px;color:#6B6862;padding-top:8px;\">Show this at the entrance</div>\n    </td></tr>\n    <tr><td style=\"padding:6px 20px 0 20px;\">\n      <table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-family:Georgia,serif;font-size:14px;color:#1A1B1E;border-top:1px solid #E6E2D8;\">\n        <tr><td style=\"padding:10px 0 2px 0;color:#6B6862;width:34%;\">Event</td><td style=\"padding:10px 0 2px 0;\">${pick(ev.name)}</td></tr>\n        <tr><td style=\"padding:2px 0;color:#6B6862;\">When</td><td style=\"padding:2px 0;\">${when}</td></tr>\n        <tr><td style=\"padding:2px 0;color:#6B6862;\">Venue</td><td style=\"padding:2px 0;\">${pick(ev.location)}</td></tr>\n        <tr><td style=\"padding:2px 0 10px 0;color:#6B6862;\">Reference</td><td style=\"padding:2px 0 10px 0;font-family:ui-monospace,Menlo,monospace;\">${order.code}</td></tr>\n      </table>\n    </td></tr>\n    <tr><td align=\"center\" style=\"padding:4px 20px 22px 20px;\">\n      <a href=\"${pdfUrl}\" style=\"display:inline-block;background:#B08D3E;color:#ffffff;text-decoration:none;font-family:Georgia,serif;font-size:13.5px;font-weight:600;padding:12px 22px;border-radius:6px;\">Download your pass</a>\n    </td></tr>\n  </table>\n  <div style=\"font-family:Georgia,serif;font-size:11.5px;color:#747066;padding-top:12px;\">Jhaveri Securities &middot; This message was sent because you were registered for this event.</div>\n</td></tr></table></body></html>`;\n\nreturn [{ json: {\n  to, pass_url: passUrl, pdf_url: pdfUrl, order_code: order.code,\n  payload: {\n    from: { address: $env.MAIL_FROM || 'events@jslwealth.in', name: 'Jhaveri Securities Events' },\n    to: [{ email_address: { address: to, name: pos.attendee_name } }],\n    subject: `Your pass for ${pick(ev.name)} \u2014 ${order.code}`,\n    htmlbody: html,\n  },\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "id": "compose-the-pass-email",
+      "name": "Compose the pass email"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.zeptomail.in/v1.1/email",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "id": "send-via-zeptomail",
+      "name": "Send via ZeptoMail",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "mvOM8Xi706pu5KWI",
+          "name": "ZeptoMail API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Registration confirmed": {
+      "main": [
+        [
+          {
+            "node": "Load the order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load the order": {
+      "main": [
+        [
+          {
+            "node": "Load the event date",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load the event date": {
+      "main": [
+        [
+          {
+            "node": "Compose the pass email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose the pass email": {
+      "main": [
+        [
+          {
+            "node": "Send via ZeptoMail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata"
+  }
+}

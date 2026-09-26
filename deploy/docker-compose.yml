@@ -15,7 +15,9 @@ name: jsl-events
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # n8n reports Postgres 16 as "outside the supported range" and pretix needs
+    # 14 or newer, so 17 is the version that satisfies both.
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
@@ -26,11 +28,51 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+    # Loopback only, never the public interface. Needed so the directory CSV
+    # importer and ad-hoc reporting can reach the cluster from the host.
+    # 5433 is deliberately avoided: jprod already publishes another postgres
+    # there (niyam-db-1), and on 0.0.0.0 rather than loopback.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 10
+    networks: [internal]
+
+  portal:
+    # The screens brokers, admins and door staff actually use. Everything a
+    # human waits on happens here; anything on a clock stays in n8n.
+    build: ../portal
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PRETIX_API_BASE: ${PRETIX_API_BASE:-http://pretix:80/api/v1}
+      PRETIX_HOST: ${PRETIX_HOST:-${PRETIX_DOMAIN}}
+      # Empty on a first deploy: the token cannot exist until pretix itself is
+      # set up. The portal says so plainly rather than failing to boot.
+      PRETIX_API_TOKEN: ${PRETIX_API_TOKEN:-}
+      PRETIX_ORGANIZER: ${PRETIX_ORGANIZER:-jsl}
+      PRETIX_EVENT: ${PRETIX_EVENT:-investor-events}
+      DIRECTORY_DSN: ${DIRECTORY_DSN:-postgresql://directory:${DIRECTORY_DB_PASSWORD:-}@postgres:5432/directory}
+      BROKER_LINK_SECRET: ${BROKER_LINK_SECRET:?set BROKER_LINK_SECRET}
+      # Admins sign in; brokers never do. Unset means the admin page says so
+      # rather than silently letting anyone in.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      WATI_API_BASE: ${WATI_API_BASE:-}
+      WATI_TOKEN: ${WATI_TOKEN:-}
+      WATI_TEMPLATE: ${WATI_TEMPLATE:-jsl_event_v3}
+      WATI_REMINDER_TEMPLATE: ${WATI_REMINDER_TEMPLATE:-jsl_event_reminder_v1}
+      ZEPTO_API_KEY: ${ZEPTO_SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Jhaveri Securities}
+      PORTAL_BASE: ${PORTAL_BASE:-https://${PRETIX_DOMAIN}}
+      QR_BASE: ${QR_BASE:-https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data=}
+      TZ: ${TZ:-Asia/Kolkata}
+    ports:
+      - "127.0.0.1:${PORTAL_PORT:-8090}:8090"
     networks: [internal]
 
   redis:
@@ -52,6 +94,10 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+    # "all" runs nginx + gunicorn + the celery worker under supervisord.
+    # On a host whose kernel has no IPv6, the bundled nginx cannot bind [::]:80
+    # and crash-loops silently while gunicorn and celery stay healthy, so
+    # nothing answers on port 80. Add docker-compose.no-ipv6.yml in that case.
     command: ["all"]
     environment:
       # pretix reads /etc/pretix/pretix.cfg; these two only affect the container itself.
@@ -85,7 +131,9 @@ services:
     networks: [internal]
 
   n8n:
-    image: docker.n8n.io/n8nio/n8n:latest
+    build:
+      context: ./n8n
+    image: jsl-events/n8n:local
     restart: unless-stopped
     depends_on:
       postgres: {condition: service_healthy}
@@ -99,6 +147,10 @@ services:
 
       N8N_HOST: ${N8N_DOMAIN:?set N8N_DOMAIN in .env}
       N8N_PORT: 5678
+      # n8n listens on :: by default and exits with "address '::' is not
+      # available" on a host without IPv6. The reverse proxy reaches it over
+      # IPv4 on the compose network either way.
+      N8N_LISTEN_ADDRESS: 0.0.0.0
       N8N_PROTOCOL: https
       WEBHOOK_URL: https://${N8N_DOMAIN}/
       N8N_EDITOR_BASE_URL: https://${N8N_DOMAIN}/
@@ -113,6 +165,8 @@ services:
       # W1 and W6 sign broker links with HMAC-SHA256. Node's crypto module is not
       # available in the Code node unless it is allowlisted here.
       NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      # Ticket QR rendering. Installed in deploy/n8n/Dockerfile.
+      NODE_FUNCTION_ALLOW_EXTERNAL: qrcode
       N8N_RUNNERS_ENABLED: "true"
 
       # WhatsApp status webhooks are high volume. Keep only what is useful.
@@ -121,6 +175,25 @@ services:
       EXECUTIONS_DATA_SAVE_ON_SUCCESS: ${N8N_SAVE_ON_SUCCESS:-all}
 
       N8N_DIAGNOSTICS_ENABLED: "false"
+      # n8n blocks $env in Code nodes and expressions by default, and the
+      # failure is a bare "access to env vars denied" in the log with nothing
+      # shown in the UI. The workflows read PRETIX_API_BASE and the broker link
+      # secret this way. Acceptable here because the instance is single-tenant
+      # and only we author workflows; on a shared instance it would not be,
+      # since any Code node could then read the database password.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+      # Signs each broker's personal registration link so the broker code in
+      # the URL cannot be edited to register under someone else's name.
+      BROKER_LINK_SECRET: ${BROKER_LINK_SECRET:?set BROKER_LINK_SECRET in .env}
+      # Where the workflows reach pretix on the internal network.
+      PRETIX_API_BASE: ${PRETIX_API_BASE:-http://pretix:80/api/v1}
+      # pretix validates the Host header against its configured url and answers
+      # 400 "Unknown host" to anything else. Reaching it as http://pretix on the
+      # compose network sends Host: pretix, so every request must override it.
+      PRETIX_HOST: ${PRETIX_HOST:-${PRETIX_DOMAIN}}
+      PRETIX_ORGANIZER: ${PRETIX_ORGANIZER:-jsl}
+      PRETIX_EVENT: ${PRETIX_EVENT:-investor-events}
     volumes:
       - n8n-data:/home/node/.n8n
       - n8n-files:/files

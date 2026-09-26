@@ -1,0 +1,501 @@
+# Runbook 05 — WATI setup
+
+Read from the live account on 2026-09-21, not from documentation.
+
+## Connection
+
+| Value | Setting |
+|---|---|
+| Base URL | `https://live-mt-server.wati.io/111557` |
+| Tenant | `111557` |
+| Channel number | `917041771021` |
+| Auth header | `Authorization: Bearer <token>` |
+| Token storage | n8n credential store and `deploy/.admin-credentials`, both gitignored |
+
+Verified: `GET /api/v1/getMessageTemplates` returns 200.
+
+**The token was shared over chat, so rotate it before go-live.** Connector, then API, then
+regenerate. Also note WATI invalidates the token whenever the account password changes, which
+surfaces mid-event as a 401, so the workflows should alarm on 401 rather than fail quietly.
+
+## What is already on the account
+
+67 templates, 23 approved. None of them fits a registration confirmation carrying a per-person QR,
+so new templates are needed. The history is still useful.
+
+### Header type codes
+
+The API returns `header.type` as an integer. Observed mapping:
+
+| Code | Meaning | Example on the account |
+|---|---|---|
+| 1 | text | `im_registration_message` |
+| 2 | image | `im2025_checkin3`, approved |
+| 4 | document | `onboarding_signoff`, approved and Utility |
+
+Two useful precedents. `onboarding_signoff` is **approved as Utility with a document header**, so a
+document header is not itself a barrier to Utility classification. `im2025_checkin3` is **approved
+with an image header**, though its media is a fixed asset rather than a per-recipient URL.
+
+### Why the previous registration template was rejected
+
+`im_registration_message` was submitted as **Utility** and **rejected**. Its body:
+
+> *Hello {{name}}*, We're thrilled to have you on board. 🙌 Check out the event agenda by visiting
+> our website. 🗓️ To access exclusive resources like speaker PPTs, log in to the website and
+> download them. 📥 Get ready for an incredible learning experience! 📈 #InvestmentMasterclass
+> #WelcomeParticipants
+
+That is promotional copy in a transactional category. "Thrilled to have you on board", "exclusive
+resources", "incredible learning experience" and campaign hashtags are all marketing signals. Meta
+classifies on content, not on the category you declare.
+
+**This is the single most useful thing on the account.** Our confirmation template must be
+ruthlessly factual: who, what, when, where, reference number, and the QR. No enthusiasm, no
+hashtags, no invitations to browse. Anything warmer either gets rejected as Utility or silently
+reclassified as Marketing, which costs roughly seven to nine times as much per message and lets
+recipients switch it off.
+
+### Variable naming is inconsistent on this account
+
+Bodies use positional `{{1}}`, `{{2}}` while `customParams` names them (`name`, `dashboard_url`).
+Both styles exist across the 67 templates. Read each template's actual tokens with
+`getMessageTemplates` before wiring a send; do not assume.
+
+## Still outstanding
+
+**The plan tier.** WATI's pricing page states Growth ships with no webhooks, and delivery status is
+webhook-only. Until the tier is known, we cannot say whether "was it delivered" is answerable at
+all. This is the one open question from step 1.
+
+## First real event
+
+Created in pretix as subevent 2:
+
+| Field | Value |
+|---|---|
+| Name | Look Beyond the Headlines — Contra Fund & SIF |
+| Speaker | Sanket Joshi, Cluster Head Baroda, ICICI Prudential AMC |
+| Starts | 2026-09-24 18:30 IST, dinner after |
+| Venue | Hotel The Fern, Behind Dinesh Mills, Akota, Vadodara 390020 |
+| Capacity | 200 |
+| RSVP on the card | Vimal Pandya, 9712989074 |
+
+It already appears in the broker registration form.
+
+**The date is three days out.** Template review takes up to 24 hours each, and the plan tier
+question is unresolved. That timeline is the real risk on this event, not the software.
+
+## Verified against the live API, not the docs
+
+**Webhooks really are off on Growth.** `GET /api/ext/v3/webhooks` returns **403** with this account's
+token. The pricing page said so; the API agrees. Delivery status therefore comes from polling
+`GET /{tenant}/api/v1/whatsApp/messages/{phone}/{localMessageId}`, and step 5 is a scheduled poller
+rather than a webhook receiver.
+
+**`local_message_id` must be 10 to 64 characters.** The send endpoint accepts a shorter one and
+returns `success: true`, but the status endpoint then refuses to look it up:
+`Local message ID length must be between 10 and 64 characters`. A message sent with a 7-character id
+is unqueryable forever. Generate ids well over the minimum, for example
+`reg-<ordercode>-<touchpoint>-<epoch>`.
+
+**A 200 from the send endpoint means almost nothing.** Sending to `910000000000`, which is not a
+valid Indian mobile, returned `success: true` with an empty `errors` array. WATI accepts the request
+and validates asynchronously. The ledger must record "accepted" on the response and only move to
+sent, delivered or failed from a later status read.
+
+**Still untested: whether an approved template with fixed media accepts a per-recipient image URL.**
+Passing an extra header parameter to `im2025_checkin3` was accepted, but so was everything else, so
+the 200 proves nothing. This needs one real recipient number to settle.
+
+## The template-reuse question: answered, and the answer is no
+
+Tested on 2026-09-21 by sending `im2025_checkin3` to a real handset with an extra header parameter
+pointing at a per-recipient QR image.
+
+**Result: the message was DELIVERED, and it carried the template's baked-in image, not ours.**
+The status record shows the header that actually went out:
+
+```
+template.header.headerTypeString = image
+template.header.mediaHeaderId    = 1489643052186150
+template.header.mediaFromPC      = WhatsApp_Image_2025_10_11_at_10.44.13-....jpeg
+statusString                     = DELIVERED
+```
+
+That media id is the file uploaded when the template was created. Our `header_image` parameter was
+accepted without complaint and silently ignored.
+
+**So an approved template whose media was a fixed upload cannot carry a per-recipient QR.** WATI's
+documentation was right: the header URL has to be declared as a variable at template creation, by
+ticking "Add a different header". Reuse is off the table for the pass; one new template is required
+and Meta has to review it.
+
+This is why the test was worth ten minutes. Both the send call and the status poll returned success
+throughout, so nothing short of looking at the delivered header would have revealed it.
+
+### What the same test proved that is good news
+
+**Delivery tracking works on the Growth plan.** Polling
+`GET /{tenant}/api/v1/whatsApp/messages/{phone}/{localMessageId}` returned `statusString: DELIVERED`
+within about 20 seconds, along with `finalText` showing the rendered body with variables substituted.
+No webhooks needed. Step 5's scheduled poller is viable exactly as planned.
+
+Useful fields on that record: `statusString`, `eventType`, `finalText`, `template.header.*`, and on
+failure `failedCode` and `failedDetail`.
+
+
+## jsl_event_pass, as WATI actually recorded it
+
+Submitted 2026-09-21, status PENDING. Two details decide how the send call must be written.
+
+**The header is a link, not an upload.** `header.link` holds the sample URL and both `mediaHeaderId`
+and `mediaFromPC` are empty. That is the same shape as `onboarding_signoff` and the opposite of
+`im2025_checkin3`, whose baked-in upload defeated the earlier test. Link-type headers are the ones
+WATI is more likely to substitute per message, so this is the promising configuration. Still unproven
+until a real send.
+
+**The button's variable collides with the body's.** WATI recorded:
+
+```
+buttons[0].parameter.urlType          = dynamic
+buttons[0].parameter.buttonParamMapping = {"index": 1, "paramName": "1"}
+customParams                          = ['1','2','3','4','5']
+```
+
+The button's dynamic suffix is mapped to a parameter named `1`, and the body's first variable, the
+client's name, is also named `1`. If WATI resolves them from one flat namespace, sending
+`{"name":"1","value":"Rahul Mehta"}` puts the client's name into the pass URL and the pass becomes
+unreachable, while the greeting still looks correct. The message would appear fine and the button
+would be broken.
+
+Test this deliberately on the first send after approval: send it, then open the button URL from the
+received message rather than trusting the send response. If the two collide, the fix is to resubmit
+with the body starting at `{{2}}` so the numbering cannot overlap.
+
+## Sending the pass by email
+
+Outbound SMTP is blocked in the build environment, from the shell and from inside the containers
+alike, so pretix cannot send mail here. ZeptoMail's HTTPS API is reachable and is what W7 uses:
+`POST https://api.zeptomail.in/v1.1/email` with `Authorization: Zoho-enczapikey <token>`.
+
+This is useful beyond the workaround. It means the pass can be delivered by email today, while the
+WhatsApp template is still in review, and the two channels share one signed ticket link.
+
+## jsl_event_pass v1: approved, and broken in two ways
+
+Approved 2026-09-21 and immediately tested with a real send. It **FAILED**, and the reason is exact:
+
+```
+statusString  = FAILED
+failedDetail  = Dynamic URL button parameter cannot contain spaces
+header LINK   = https://api.qrserver.com/...&data=SAMPLE123   (the approval sample)
+BUTTON url    = https://events.jslwealth.in/webhook/ticket?t={{1}}   (never substituted)
+finalText     = Hello Rahul Mehta, your registration is confirmed. ...
+```
+
+**Fault one: the button and the body share parameter `1`.** WATI tried to put the client's name into
+the dynamic URL and refused it for containing a space. So every client whose name has a space, which
+is nearly all of them, fails. The collision predicted from `buttonParamMapping` is real.
+
+It failing loudly is fortunate. Had the name been a single word the message would have sent, and the
+button would have pointed at `?t=Rahul` for the rest of the event.
+
+**Fault two: a plain URL in the header is static.** The header link stayed on the approval sample.
+Extra `header_image` and `media_url` parameters were accepted and ignored, exactly as on
+`im2025_checkin3`. Pasting a URL rather than uploading a file did not make the header dynamic.
+
+### What the body proved
+
+Body variables substitute perfectly: name, event, date, venue and reference all rendered. So **text
+is the one channel we can rely on**, and the design should lean on it.
+
+### v2 design
+
+| Part | Decision |
+|---|---|
+| Body | Six variables. `{{6}}` carries the full pass URL as plain text. WhatsApp auto-links it. |
+| Button | **None.** Removing it removes the collision entirely. |
+| Header | Image, with the header variable set via the only free-form attribute WATI's UI exposes, `product_image_url` under Shopify. Ignore the commerce label; it is just a named placeholder. |
+| Header sample | A neutral JSL-branded image, **not a QR**. If substitution fails, clients see branding rather than a QR that is not theirs. |
+
+The reasoning: a link in the body is certain to work because body substitution is proven. The image
+header is an upgrade that either works or degrades to branding. Nothing in the message is ever wrong,
+which is not true of v1, where a failed substitution would have shown every client the same sample QR.
+
+A URL in the body also removes the dependency on `events.jslwealth.in` being the exact approved
+domain, since the whole URL is a variable rather than a baked-in prefix.
+
+## Creating templates through the API
+
+`POST /{tenant}/api/v1/whatsApp/templates` works, with two traps.
+
+**It returns HTTP 500 on success.** The template is created correctly; the 500 is noise. Always read
+the template list back rather than trusting the status code. A second call then fails with
+"template with current name already exists", which is the real confirmation that the first worked.
+
+**It only ever creates a DRAFT.** There is no submit or publish endpoint: the documented template
+endpoints are get, create, and delete, plus webhooks that report status changes. Sending a draft to
+Meta for review must be done by a person clicking **Save and submit** in the dashboard.
+
+Deleting is `DELETE /{tenant}/api/v1/whatsApp/templates/{wabaId}/{name}`, which returns `{"ok":true}`.
+The wabaId for this account is on every template in the list response.
+
+A minimal working create payload:
+
+```json
+{
+  "elementName": "jsl_event_pass_v2",
+  "category": "UTILITY",
+  "language": "en",
+  "body": "Hello {{1}}, ... Your entry pass: {{6}}",
+  "footer": "",
+  "buttons": [],
+  "customParams": [{"paramName": "1", "paramValue": "Rahul Mehta"}, ...]
+}
+```
+
+WATI fills in `subCategory: STANDARD`, `buttonsType: none` and `type: hsm` by itself.
+
+## Template inventory after this work
+
+| Name | Status | Verdict |
+|---|---|---|
+| `jsl_event_pass` | APPROVED | **Broken, do not use.** The dynamic URL button shares parameter `1` with the body, so any client whose name contains a space fails to send. |
+| `jsl_event_pass_v2` | DRAFT, awaiting submit | The one to use. Six body variables, the sixth carrying the pass URL. No header, no buttons, so nothing can collide and nothing can silently show the wrong image. |
+
+`jsl_event_pass` should be deleted once v2 is approved, so nobody reaches for it later. That is a
+deliberate decision to leave to a person, since deleting an approved template is not reversible
+without another Meta review.
+
+## Getting the QR into the chat, properly
+
+The v1 header failed because the link was a fixed URL. Testing three draft variants through the API,
+at no cost since drafts never reach Meta, showed WATI **stores a variable inside a header link
+verbatim**. So the header can be dynamic after all; v1 simply had no variable in it.
+
+`jsl_event_pass_v3` therefore puts the variable inside the URL rather than making the whole URL a
+variable:
+
+```
+header.link = https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=20&data={{6}}
+body        = {{1}}..{{5}}
+buttons     = none
+```
+
+At send time `{{6}}` is the ticket secret, so every recipient gets their own QR rendered in the chat.
+
+**Why the QR service rather than our own endpoint.** Pointing the header at
+`events.jslwealth.in` would be better hosting, but that domain does not resolve yet, and Meta fetches
+the sample during review, so it would likely be rejected. The QR service resolves today, which
+removes the deployment from the critical path for this one piece. It is touched only at send time,
+never when a QR is scanned at the door, so an outage delays a message rather than stopping anyone
+getting in. Move the header to our own endpoint in a later template once the domain is live.
+
+**The failure mode is loud, which is why this is safe to try.** If `{{6}}` is not substituted, the
+link keeps its braces, the fetch fails and the send fails visibly, exactly as the button did. It
+cannot quietly deliver the wrong person's QR.
+
+### Two drafts, submit both
+
+| Draft | Shape | Depends on |
+|---|---|---|
+| `jsl_event_pass_v3` | QR image in the chat, five body variables, no buttons | the QR service at send time |
+| `jsl_event_pass_v2` | No image; the pass URL is body variable six | jprod and DNS being live |
+
+Submitting both costs nothing and gives two independent routes. v3 is the one to use if it works,
+because a QR already on screen beats a link at a venue door. v2 is the fallback that needs no image
+substitution at all.
+
+---
+
+## The header variable: what the dashboard actually allows
+
+Three attempts at a per-recipient QR in the media header failed in the WATI UI before the
+cause was clear. Recording it so nobody repeats them.
+
+### Attempt 1 — positional variable continuing the body's numbering
+
+Header link `...&data={{6}}` with body `{{1}}`–`{{5}}`, created through the API. The API
+accepted it and stored it. The dashboard then refused to save the template, reporting
+`Body can't be empty or more than 1024 characters` while the counter read 157/1024.
+
+The error named the wrong component. The real signal was in the Sample Content list, which
+rendered the header's sample **first**, ahead of the body's five.
+
+### What that proved: WATI flattens components into one ordered list, header first
+
+Typing samples in body order produced a message shifted by one — the greeting rendered the
+event name, and the body's last variable was left unfilled as a literal `{{reference}}`.
+Re-typing with the header's sample in box 1 and the body's five in boxes 2–6 rendered
+correctly.
+
+So the flat `customParams` list WATI exposes is ordered **header, then body, then buttons**,
+regardless of the numbers written in the template text. This is the same flat namespace that
+made `jsl_event_pass` v1 put a client's name inside its button URL.
+
+### Attempt 2 — positional variable renumbered to `{{1}}`
+
+Rejected with a precise error: **`Header variables incorrect`**. Positional variables are not
+valid in a media header.
+
+### Attempt 3 — the "Add Variable" control under the header field
+
+Opens a **Select attribute** dialog offering exactly two entries, both named
+`product_image_url`, one under Shopify and one under Woocommerce. There is no free-form
+option and no custom attribute. The control is wired to WATI's e-commerce integrations.
+
+**This corrects an earlier claim in this runbook** that `product_image_url` is "the only
+free-form attribute WATI's UI exposes, ignore the commerce label". It is not free-form. It
+resolves against Shopify/Woocommerce product data, which this account does not have.
+
+### What the documentation says the correct shape is
+
+Per WATI's help centre on personalised media in campaigns, the header variable is a **named
+placeholder typed directly into the URL field**, and **the entire URL is the variable**:
+
+```
+{{qr_url}}
+```
+
+Not `https://host/path?data={{qr_url}}`. The whole value is supplied at send time, or read
+from a contact attribute of the same name, set manually, by CSV import, or by API.
+
+This matches the underlying platform: Meta does not perform string substitution inside a
+media header URL. At send time a complete image URL is supplied. A variable spliced into a
+query parameter has nothing to map onto, which is what `Header variables incorrect` means.
+
+**Also corrects** the earlier conclusion that "header links do take variables", which was
+drawn from the API accepting a draft. Draft storage is not approval and is not send. The API
+accepts shapes the platform will not honour.
+
+### Consequence, if the dynamic header is used
+
+Nothing about the sample URL is baked in. `api.qrserver.com` would be an approval-time sample
+only, and the header could be repointed at `events.jslwealth.in/webhook/ticket?t=...` with no
+further Meta review.
+
+Two things remain unverified and must be tested against a real send:
+
+- whether `qr_url` may be passed inline in the send call's `parameters` array, or must first
+  be written to the contact as an attribute. If the latter, the confirmation send costs two
+  API calls instead of one — roughly 1,200 calls for a 200-guest event against the Growth
+  plan's 10,000 per month, so it still fits.
+- whether Meta approves a template whose header URL is a bare variable.
+
+## What was actually submitted
+
+Read back from `getMessageTemplates`, not assumed. `jsl_event_v3` is **PENDING** with the
+dynamic header intact — the QR-in-chat design, not the simplified body-link fallback that was
+briefly considered.
+
+Note the element name is `jsl_event_v3`, **not** `jsl_event_pass_v3`.
+
+| Part | Value |
+|---|---|
+| Name | `jsl_event_v3` |
+| Status | PENDING |
+| Category | UTILITY |
+| Language | `en_US` |
+| Header | image, `link` = `{{qr_url}}` — a bare variable, no `mediaHeaderId`, no baked domain |
+| Body | five positional tokens `{{1}}`–`{{5}}` |
+| Footer | none |
+| Buttons | none |
+
+### The mapping W2 must use
+
+The body text stores **positional** tokens while `customParams` names them. Send-time
+parameters go by **name**, in this order:
+
+| Name | Carries | Sample at approval |
+|---|---|---|
+| `name` | client name | Rahul Mehta |
+| `event` | event title | Contra Fund and SIF Session |
+| `datetime` | start, human readable | 24 September 2026, 6:30 PM |
+| `venue` | venue line | Hotel The Fern, Akota, Vadodara |
+| `reference` | Pretix order code | ABC123 |
+| `qr_url` | **complete** image URL for that recipient | an api.qrserver.com sample |
+
+`qr_url` is listed **last** in `customParams`, after the five body parameters — the opposite of
+the header-first ordering the dashboard's Sample Content boxes use. Do not infer send-time
+order from the dashboard's box order; read `customParams`.
+
+Because `link` is a bare variable, `api.qrserver.com` is an approval-time sample only. Once
+jprod is live the header is repointed at `events.jslwealth.in/webhook/ticket?...` — W6's own
+endpoint, JSL navy QR, no third party handling ticket secrets — **with no further Meta review**.
+
+### Still unverified
+
+- whether `qr_url` may be passed inline in the send call's `parameters` array, or must first be
+  written to the contact as an attribute. Test on the first real send.
+- whether Meta approves a bare-variable header at all. The result of this review answers it.
+
+### The door fallback stays regardless
+
+The order code is made the primary check-in method, not the fallback. Door staff search the
+reference and redeem, rather than depending on a scan succeeding on a dim phone in a queue.
+The QR stays the fast path.
+
+---
+
+## Approved, sent, delivered, scanned — the loop closed end to end
+
+2026-09-21. Every line below is a real API response against the live account and a
+running Pretix, not a design intention.
+
+### Meta accepts a bare-variable media header
+
+`jsl_event_v3` came back **APPROVED** with `header.link` still `{{qr_url}}`. The open
+question of whether Meta would approve a header whose entire URL is a variable is
+answered: it does.
+
+### `qr_url` is supplied inline at send time
+
+The larger open question — contact attribute or send parameter — is answered in favour
+of the cheap option. It rides in the same `parameters` array as the body values:
+
+```http
+POST {base}/api/v1/sendTemplateMessage?whatsappNumber=91XXXXXXXXXX
+{"template_name":"jsl_event_v3","broadcast_name":"jsl_v3_verify_MKXUT",
+ "parameters":[{"name":"name","value":"..."},
+               {"name":"event","value":"..."},
+               {"name":"datetime","value":"..."},
+               {"name":"venue","value":"..."},
+               {"name":"reference","value":"MKXUT"},
+               {"name":"qr_url","value":"https://.../create-qr-code/?...&data=<secret>"}]}
+```
+
+Returns `200 {"result": true}`. **One API call per message, not two.** No contact
+attribute has to be written first, so the Growth plan's 10,000 monthly calls stretch to
+roughly ten 200-guest events rather than five.
+
+### Delivery is readable by polling, without webhooks
+
+`GET /api/v1/getMessages/{number}` returned `statusString: DELIVERED` for the send, and
+still carries the earlier `FAILED` with `Dynamic URL button parameter cannot contain
+spaces` from the broken v1 template. Status polling works on Growth; W5 does not need a
+plan upgrade.
+
+### The whole chain, in order
+
+| Step | Result |
+|---|---|
+| Order created for subevent 2 | `201`, code `MKXUT`, 32-character secret |
+| WhatsApp sent with that secret as the QR | `200 {"result": true}` |
+| Delivery polled back | `DELIVERED` |
+| Door scan of that secret | `status: ok`, attendee `Nimish Shah` |
+| Same secret scanned again | `status: error`, `reason: already_redeemed` |
+
+### Order codes are five characters
+
+Previously recorded as uncertain. `MKXUT` — five characters. That is what
+`{{reference}}` carries and what door staff type when a scan will not read.
+
+### Housekeeping
+
+Order `MKXUT` is test data against the real 24 September subevent and is already
+redeemed. Cancel it before the event so the attendance count starts clean.
+
+The ticket secret for that order appeared in a development transcript. It is spent, and
+the order is to be cancelled, so no action beyond the cancellation is needed — but the
+general rule holds: secrets belong in the QR and nowhere a human can copy them.

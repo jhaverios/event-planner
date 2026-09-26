@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Register a client — Jhaveri Securities</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">Jhaveri Securities</span>
+  <span class="who" id="who"></span>
+</header>
+
+<main class="main">
+  <div class="pagehead"><h1>Register a client</h1></div>
+  <p class="denom" id="denom">The client is sent their pass the moment you submit.</p>
+
+  <div id="boot" class="note">Loading…</div>
+
+  <form id="form" hidden>
+    <div class="card">
+      <div class="field" id="bcWrap" hidden>
+        <label for="bc">Your broker code</label>
+        <input type="text" id="bc" autocomplete="off" spellcheck="false"
+               placeholder="e.g. BRK042" style="text-transform:uppercase"
+               aria-describedby="bch">
+        <div class="hint" id="bch">Entered once — it stays filled in for your next client.</div>
+      </div>
+
+      <div class="field">
+        <label for="ev">Event</label>
+        <select id="ev" required></select>
+        <div class="hint" id="evh"></div>
+      </div>
+
+      <div class="field">
+        <label for="nm">Client name</label>
+        <input type="text" id="nm" autocomplete="off" required
+               placeholder="Full name"
+               aria-describedby="nmh" role="combobox" aria-expanded="false"
+               aria-controls="ta" aria-autocomplete="list">
+        <div class="ta" id="ta" role="listbox" hidden></div>
+        <div class="hint" id="nmh">Type the client's full name.</div>
+      </div>
+
+      <div class="field">
+        <label for="ph">WhatsApp number</label>
+        <input type="tel" id="ph" inputmode="numeric" autocomplete="off"
+               placeholder="10 digits, starting 6 to 9" aria-describedby="phh">
+        <div class="hint" id="phh">The pass with the QR code goes to this number.</div>
+      </div>
+
+      <div class="field">
+        <label for="em">Email address</label>
+        <input type="email" id="em" autocomplete="off" placeholder="name@example.com"
+               aria-describedby="emh">
+        <div class="hint" id="emh">The same pass is emailed here as well.</div>
+      </div>
+
+      <button class="btn" id="go" type="submit">Register and send pass</button>
+      <div class="hint" id="err" style="color:var(--neg);margin-top:10px" hidden></div>
+    </div>
+  </form>
+
+  <div class="card" id="sentCard" hidden>
+    <h2>Registered just now</h2>
+    <div class="tblwrap">
+      <table>
+        <thead><tr><th>Client</th><th>Reference</th><th>Sent to</th></tr></thead>
+        <tbody id="sent"></tbody>
+      </table>
+    </div>
+    <div class="hint" id="sentHint"></div>
+  </div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  let session = null, taIndex = -1, taRows = [], done = [];
+
+  const brokerCode = () => ($('bc').value || '').trim().toUpperCase();
+  let events = [];
+
+  // A broker on the phone to a client gets asked "who's speaking?" more often
+  // than anything else, so it sits under the picker rather than nowhere.
+  function showEvent() {
+    const e = events.find(x => x.id === +$('ev').value);
+    if (!e) return ($('evh').textContent = '');
+    const bits = [];
+    if (e.speaker) {
+      const credit = [e.speaker_title, e.speaker_org].filter(Boolean).join(', ');
+      bits.push(credit ? `${e.speaker} — ${credit}` : e.speaker);
+    }
+    if (e.location) bits.push(e.location);
+    if (e.note) bits.push(e.note);
+    $('evh').textContent = bits.join(' · ');
+  }
+
+  // --- typeahead -----------------------------------------------------------
+  // Only useful once a directory has been loaded; until the client file
+  // arrives this quietly does nothing rather than showing an empty box.
+  const search = JSL.debounce(async q => {
+    if (!session.directory) return closeTa();
+    const code = session.ask_broker_code ? brokerCode() : session.subject;
+    if (!code || q.trim().length < 2) return closeTa();
+    let rows = [];
+    try {
+      rows = await JSL.get('/api/clients?q=' + encodeURIComponent(q) +
+                           '&broker=' + encodeURIComponent(code));
+    } catch (e) { return closeTa(); }
+    taRows = rows;
+    if (!rows.length) return closeTa();
+    $('ta').innerHTML = rows.map((r, i) => `
+      <button type="button" role="option" data-i="${i}" aria-selected="false">
+        <span class="nm">${JSL.esc(r.name)}</span>
+        <span class="dt">${JSL.esc(JSL.contactLine(r))}</span>
+      </button>`).join('');
+    $('ta').hidden = false;
+    $('nm').setAttribute('aria-expanded', 'true');
+    taIndex = -1;
+  }, 160);
+
+  function closeTa() {
+    $('ta').hidden = true;
+    $('nm').setAttribute('aria-expanded', 'false');
+    taIndex = -1; taRows = [];
+  }
+
+  function pick(i) {
+    const r = taRows[i];
+    if (!r) return;
+    $('nm').value = r.name;
+    // Prefilled, never locked: a number on file can be out of date and the
+    // broker in front of the client is the one who knows.
+    $('ph').value = r.phone || '';
+    $('em').value = r.email || '';
+    closeTa();
+    const gaps = [];
+    if (!r.phone) gaps.push('no number on file');
+    if (!r.email) gaps.push('no email on file');
+    $('nmh').textContent = gaps.length
+      ? `From your client list — ${gaps.join(', ')}. Fill in what you have; you can edit either.`
+      : 'From your client list. Details filled in below — edit them if anything has changed.';
+    $('nmh').className = gaps.length ? 'hint warn' : 'hint';
+    ($(r.phone ? 'em' : 'ph')).focus();
+  }
+
+  $('nm').addEventListener('input', e => {
+    $('nmh').className = 'hint';
+    $('nmh').textContent = session.directory
+      ? "Type the client's full name."
+      : "Type the client's full name.";
+    search(e.target.value);
+  });
+
+  $('nm').addEventListener('keydown', e => {
+    if ($('ta').hidden) return;
+    const n = taRows.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      taIndex = (taIndex + (e.key === 'ArrowDown' ? 1 : -1) + n) % n;
+      [...$('ta').children].forEach((b, i) =>
+        b.setAttribute('aria-selected', i === taIndex ? 'true' : 'false'));
+    } else if (e.key === 'Enter' && taIndex >= 0) {
+      e.preventDefault(); pick(taIndex);
+    } else if (e.key === 'Escape') { closeTa(); }
+  });
+
+  $('ta').addEventListener('click', e => {
+    const b = e.target.closest('button[data-i]');
+    if (b) pick(+b.dataset.i);
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.field')) closeTa();
+  });
+
+  // The code is typed once and kept for the tab, so a broker registering six
+  // people does not retype it six times.
+  $('bc').addEventListener('input', () => {
+    try { sessionStorage.setItem('jslbc', brokerCode()); } catch (e) {}
+  });
+
+  // --- submit --------------------------------------------------------------
+  $('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('err').hidden = true;
+    const btn = $('go');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> Registering…';
+    try {
+      const res = await JSL.post('/api/register', {
+        subevent: +$('ev').value,
+        name: $('nm').value,
+        phone: $('ph').value,
+        email: $('em').value,
+        broker_code: brokerCode()
+      });
+      record(res);
+      // Everything clears except the broker code and the event, because the
+      // next client is almost always the same broker at the same event.
+      $('nm').value = ''; $('ph').value = ''; $('em').value = '';
+      $('nmh').className = 'hint';
+      $('nmh').textContent = "Type the client's full name.";
+      $('nm').focus();
+    } catch (err) {
+      $('err').textContent = err.message;
+      $('err').hidden = false;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Register and send pass';
+    }
+  });
+
+  function record(res) {
+    done.unshift(res);
+    const chip = (label, r) => {
+      if (!r) return `<span class="chip">· ${label} not sent</span>`;
+      return r.ok ? `<span class="chip ok">✓ ${label}</span>`
+                  : `<span class="chip bad">✕ ${label}</span>`;
+    };
+    $('sent').innerHTML = done.map(d => `
+      <tr>
+        <td>${JSL.esc(d.name)}</td>
+        <td class="num ref">${JSL.esc(d.reference)}</td>
+        <td><div class="chips">${chip('WhatsApp', d.delivery.whatsapp)}${chip('Email', d.delivery.email)}</div></td>
+      </tr>`).join('');
+
+    const failed = done.filter(d => Object.values(d.delivery).some(r => r && !r.ok));
+    $('sentHint').innerHTML = failed.length
+      ? `<span class="hint warn">${failed.length} of these could not be delivered. The registration still stands — give the client their reference and they can be checked in with it. Details: ` +
+        JSL.esc(failed.map(d => d.reference + ' — ' +
+          Object.entries(d.delivery).filter(([, r]) => r && !r.ok)
+            .map(([k, r]) => k + ': ' + r.detail).join('; ')).join(' | ')) + '</span>'
+      : 'Each client above has been sent their QR pass.';
+    $('sentCard').hidden = false;
+  }
+
+  // --- boot ----------------------------------------------------------------
+  (async function () {
+    try {
+      session = await JSL.get('/api/session');
+      const evs = await JSL.get('/api/events');
+      $('who').innerHTML = `<b>${JSL.esc(session.display_name)}</b>${
+        JSL.esc(session.ask_broker_code ? 'shared link' : session.subject)}`;
+
+      if (session.ask_broker_code) {
+        $('bcWrap').hidden = false;
+        try {
+          const kept = sessionStorage.getItem('jslbc');
+          if (kept) $('bc').value = kept;
+        } catch (e) {}
+        $('bc').required = true;
+      }
+      if (!session.directory) {
+        $('bch').textContent = 'Entered once — it stays filled in for your next client. '
+          + 'Client suggestions switch on once the client list is loaded.';
+      }
+
+      const live = evs.filter(e => !e.past);
+      if (!live.length) {
+        $('boot').className = 'note warn';
+        $('boot').textContent = 'There is no upcoming event to register for.';
+        return;
+      }
+      events = live;
+      $('ev').innerHTML = live.map(e =>
+        `<option value="${e.id}">${JSL.esc(e.name)} · ${JSL.esc(e.when)}</option>`).join('');
+      $('ev').addEventListener('change', showEvent);
+      showEvent();
+
+      const ch = [];
+      if (!session.channels.whatsapp) ch.push('WhatsApp is not configured');
+      if (!session.channels.email) ch.push('email is not configured');
+      if (ch.length) {
+        $('denom').innerHTML += ` <span style="color:var(--amber)">${ch.join(' and ')}.</span>`;
+      }
+
+      $('boot').hidden = true;
+      $('form').hidden = false;
+      ($(session.ask_broker_code && !$('bc').value ? 'bc' : 'nm')).focus();
+    } catch (e) {
+      $('boot').className = 'note bad';
+      $('boot').textContent = e.message;
+    }
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# Overlay for hosts whose kernel has no IPv6.
+#
+# Symptom: pretix reports gunicorn and celery healthy, but nothing answers on
+# port 80, and the container log repeats:
+#   [emerg] socket() [::]:80 failed (97: Address family not supported by protocol)
+#
+# Cause: the image's /etc/nginx/nginx.conf binds both 0.0.0.0:80 and [::]:80.
+# The second bind fails, supervisord restarts nginx, and it never serves.
+# The container runs as pretixuser, so it cannot patch that file itself.
+#
+# Check before using this file:
+#   ls /proc/net/if_inet6     # missing => no IPv6 => use this overlay
+#
+# Use:
+#   docker compose -f docker-compose.yml -f docker-compose.no-ipv6.yml up -d
+#
+# pretix/nginx-ipv4-only.conf is the image's own nginx.conf with the single
+# "listen [::]:80" line removed. Regenerate it after a pretix image upgrade:
+#   docker compose exec -T pretix cat /etc/nginx/nginx.conf \
+#     | sed '/listen \[::\]:80/d' > pretix/nginx-ipv4-only.conf
+
+services:
+  pretix:
+    volumes:
+      - ./pretix/nginx-ipv4-only.conf:/etc/nginx/nginx.conf:ro

@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Events — Jhaveri Securities</title>
+<link rel="stylesheet" href="/assets/app.css">
+<style>
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; }
+  .evcard {
+    border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--ground);
+    padding: 18px; box-shadow: var(--lift); cursor: pointer; text-align: left; width: 100%;
+    font: inherit; color: inherit; display: block;
+  }
+  .evcard:hover { border-color: var(--accent); }
+  .evcard h3 { margin: 0 0 4px; font-size: var(--t-lg); font-weight: 650; }
+  .evcard .meta { color: var(--muted); font-size: 12.5px; margin-bottom: 2px; }
+  .evcard .spk { color: var(--gold); font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
+  .evcard .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+                  border-top: 1px solid var(--line); padding-top: 12px; }
+  .evcard .n { font-size: 1.28rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .evcard .l { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .evcard .past { opacity: .6; }
+  .back { border: 0; background: none; color: var(--accent); cursor: pointer;
+          font: inherit; padding: 0; margin: 18px 0 0; }
+  .login { max-width: 360px; margin: 60px auto; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">Jhaveri Securities</span>
+  <span class="who" id="who"></span>
+</header>
+
+<main class="main wide">
+  <div id="boot" class="note">Loading…</div>
+
+  <!-- sign in -->
+  <div id="login" class="login" hidden>
+    <div class="pagehead"><h1>Sign in</h1></div>
+    <p class="denom">The events dashboard.</p>
+    <form class="card" id="loginForm">
+      <div class="field">
+        <label for="pw">Password</label>
+        <input type="password" id="pw" autocomplete="current-password" required>
+      </div>
+      <button class="btn" type="submit" style="width:100%">Sign in</button>
+      <div class="hint" id="loginErr" style="color:var(--neg);margin-top:10px" hidden></div>
+    </form>
+  </div>
+
+  <!-- the list of events -->
+  <div id="list" hidden>
+    <div class="pagehead"><h1>Events</h1></div>
+    <p class="denom">Every event, and how each one is going. Open one for the detail.</p>
+    <div class="cards" id="cards"></div>
+    <div class="empty" id="noEvents" hidden>No events yet.</div>
+  </div>
+
+  <!-- one event -->
+  <div id="detail" hidden>
+    <button class="back" id="back">← All events</button>
+    <div class="pagehead"><h1 id="dTitle"></h1></div>
+    <p class="denom" id="dSub"></p>
+
+    <div class="figs" id="figs"></div>
+    <p class="hint" id="hint">Choose a number above to see those people.</p>
+
+    <div class="card" id="brokerCard" hidden>
+      <h2>By broker</h2>
+      <div class="tblwrap">
+        <table>
+          <thead><tr>
+            <th>Broker</th><th class="r">Invited</th><th class="r">Attended</th>
+            <th class="r">No-show</th><th class="r">Failed</th><th class="r">Turnout</th>
+          </tr></thead>
+          <tbody id="brokers"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="brokersEmpty" hidden>Nobody has been invited yet.</div>
+    </div>
+
+    <div class="card" id="peopleCard" hidden>
+      <h2 id="peopleTitle">Every invite</h2>
+      <div class="srow" style="margin-bottom:12px">
+        <div class="field">
+          <label for="q">Find a person</label>
+          <input type="text" id="q" placeholder="Name, number, email, reference or broker" autocomplete="off">
+        </div>
+        <div class="listing" id="listing"></div>
+      </div>
+      <div class="tblwrap">
+        <table>
+          <thead><tr>
+            <th>Client</th><th>WhatsApp</th><th>Email</th><th>Reference</th>
+            <th>At the door</th><th>Interest</th><th></th>
+          </tr></thead>
+          <tbody id="people"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="peopleEmpty" hidden>Nobody has been invited yet.</div>
+    </div>
+  </div>
+</main>
+
+<script src="/assets/app.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  let events = [], data = null, current = null, timer = null;
+
+  // --- sign in -----------------------------------------------------------
+  $('loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('loginErr').hidden = true;
+    try {
+      await JSL.post('/api/admin/login', { password: $('pw').value });
+      $('pw').value = '';
+      $('login').hidden = true;
+      await showList();
+    } catch (err) {
+      $('loginErr').textContent = err.message;
+      $('loginErr').hidden = false;
+    }
+  });
+
+  // --- the cards ---------------------------------------------------------
+  async function showList() {
+    clearInterval(timer);
+    const d = await JSL.get('/api/overview');
+    events = d.events;
+    $('who').innerHTML = `<b>${JSL.esc(d.admin)}</b>${events.length} event${events.length === 1 ? '' : 's'}`;
+    $('noEvents').hidden = events.length > 0;
+    // Three numbers per card, because a card with everything on it is a table.
+    $('cards').innerHTML = events.map(e => `
+      <button class="evcard${e.past ? ' past' : ''}" data-id="${e.id}">
+        <h3>${JSL.esc(e.name)}</h3>
+        <div class="meta">${JSL.esc(e.when)}${e.past ? ' · finished' : ''}</div>
+        <div class="meta">${JSL.esc(e.location || '')}</div>
+        <div class="spk">${e.speaker ? JSL.esc(e.speaker + (e.speaker_org ? ' · ' + e.speaker_org : '')) : '&nbsp;'}</div>
+        <div class="nums">
+          <div><div class="n">${e.registered}</div><div class="l">Invited</div></div>
+          <div><div class="n">${e.attended}</div><div class="l">Turned up</div></div>
+          <div><div class="n">${e.interested || 0}</div><div class="l">Interested</div></div>
+          <div><div class="n${e.whatsapp_failed || e.email_failed ? ' ' : ''}"
+                    style="${e.whatsapp_failed || e.email_failed ? 'color:var(--neg)' : ''}">${
+                    e.whatsapp_failed + e.email_failed}</div><div class="l">Failed</div></div>
+        </div>
+      </button>`).join('');
+    $('list').hidden = false;
+    $('detail').hidden = true;
+    $('boot').hidden = true;
+  }
+
+  $('cards').addEventListener('click', e => {
+    const b = e.target.closest('.evcard');
+    if (b) showEvent(+b.dataset.id);
+  });
+  $('back').addEventListener('click', () => { current = null; showList(); });
+
+  // --- one event ---------------------------------------------------------
+  async function showEvent(id) {
+    current = id;
+    const ev = events.find(e => e.id === id) || {};
+    $('dTitle').textContent = ev.name || '';
+    const credit = [ev.speaker_title, ev.speaker_org].filter(Boolean).join(', ');
+    $('dSub').textContent = [
+      ev.when, ev.location,
+      ev.speaker ? ev.speaker + (credit ? ' — ' + credit : '') : 'no speaker recorded'
+    ].filter(Boolean).join(' · ');
+    $('list').hidden = true;
+    $('detail').hidden = false;
+    await load();
+    clearInterval(timer);
+    // The door is why this screen is open on the night; keep it current.
+    timer = setInterval(load, 30000);
+  }
+
+  async function load() {
+    if (!current) return;
+    data = await JSL.get('/api/stats?subevent=' + current);
+    render(data);
+  }
+
+  // Every tile is a filter. A number on a dashboard that cannot be opened is
+  // a number somebody has to go and reconstruct by hand somewhere else.
+  const FILTERS = {
+    all:        p => true,
+    sent:       p => p.whatsapp_ok || p.email_ok,
+    attended:   p => p.attended,
+    no_show:    p => !p.attended,
+    interested: p => p.interested
+  };
+  // Nothing is chosen on arrival. The page opens as five numbers; a table
+  // appears only when somebody asks for one. A screen that shows everything
+  // at once makes the reader do the filtering.
+  let filter = null;
+
+  function figs(d) {
+    const cards = [
+      ['all', 'Invited', d.total, 'everyone registered', ''],
+      ['sent', 'Messages sent', d.sent_ok,
+       d.sent_failed ? `${d.sent_failed} failed` : 'none failed',
+       d.sent_failed ? 'warn' : 'good'],
+      ['attended', 'Turned up', d.attended, `of ${d.total} invited`,
+       d.attended ? 'good' : ''],
+      ['no_show', 'Did not come', d.no_show,
+       d.total ? `${100 - d.rate}% of the room` : '—', d.no_show ? 'warn' : ''],
+      // The one the desk acts on: who asked to be called back.
+      ['interested', 'Interested', d.interested || 0,
+       d.attended ? `of ${d.attended} who came` : 'after the follow-up',
+       d.interested ? 'opp' : '']
+    ];
+    cards.push(['brokers', 'By broker', d.brokers.length,
+                'who invited whom', '']);
+    $('figs').innerHTML = cards.map(([id, k, v, s, cls]) => `
+      <button class="fig${filter === id ? ' sel' : ''}" data-filter="${id}">
+        <div class="k">${k}</div>
+        <div class="v ${cls}">${JSL.esc(v)}</div>
+        <div class="s">${JSL.esc(s)}</div></button>`).join('');
+  }
+
+  $('figs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-filter]');
+    if (!b || !data) return;
+    // Clicking the chosen one again closes it, so the page can be put back
+    // to five numbers without reloading.
+    filter = filter === b.dataset.filter ? null : b.dataset.filter;
+    render(data);
+  });
+
+  function render(d) {
+    figs(d);
+    const showBrokers = filter === 'brokers';
+    const showPeople = !!filter && !showBrokers;
+    $('brokerCard').hidden = !showBrokers;
+    $('peopleCard').hidden = !showPeople;
+    $('hint').hidden = !!filter;
+    if (showBrokers) brokers(d);
+    if (showPeople) {
+      $('peopleTitle').textContent = TITLE[filter] || 'Every invite';
+      people(d, $('q').value);
+    }
+  }
+
+  const TITLE = {all: 'Everyone registered', sent: 'People the pass reached',
+                 attended: 'People who came', no_show: 'People who did not come',
+                 interested: 'People who asked to be contacted'};
+
+  function brokers(d) {
+    const max = Math.max(1, ...d.brokers.map(b => b.registered));
+    $('brokersEmpty').hidden = d.brokers.length > 0;
+    $('brokers').innerHTML = d.brokers.map(b => `
+      <tr>
+        <td>${JSL.esc(b.name)}${b.name !== b.broker ? ` <span class="sub">${JSL.esc(b.broker)}</span>` : ''}</td>
+        <td class="r num bar" style="--w:${JSL.pct(b.registered, max)}">${b.registered}</td>
+        <td class="r num">${b.attended}</td>
+        <td class="r num">${b.no_show}</td>
+        <td class="r num"${b.failed ? ' style="color:var(--neg)"' : ''}>${b.failed}</td>
+        <td class="r num">${b.rate}%</td>
+      </tr>`).join('');
+  }
+
+  // A tick, a cross, or a dash. The dash matters: it means we have no record
+  // either way, which is not the same as "it failed".
+  function chan(ok, detail) {
+    if (ok === true)  return '<span class="chip ok">✓ sent</span>';
+    if (ok === false) return `<span class="chip bad" title="${JSL.esc(detail)}">✕ failed</span>`;
+    return '<span class="chip">· no record</span>';
+  }
+
+  const LABEL = {all: 'everyone registered', sent: 'people the pass reached',
+                 attended: 'people who came', no_show: 'people who did not come',
+                 interested: 'people who asked to be contacted'};
+
+  function people(d, query) {
+    const f = (query || '').trim().toLowerCase();
+    const keep = FILTERS[filter] || FILTERS.all;
+    const rows = d.people.filter(keep).filter(p => !f ||
+      p.name.toLowerCase().includes(f) ||
+      (p.reference || '').toLowerCase().includes(f) ||
+      (p.phone || '').includes(f) ||
+      (p.email || '').toLowerCase().includes(f) ||
+      (p.broker || '').toLowerCase().includes(f));
+    $('listing').textContent = `${rows.length} ${LABEL[filter] || ''}`
+      + (f ? ` matching "${$('q').value}"` : '');
+    $('peopleEmpty').hidden = rows.length > 0;
+    $('peopleEmpty').textContent = d.people.length
+      ? 'Nobody here matches that.' : 'Nobody has been invited yet.';
+    $('people').innerHTML = rows.map(p => `
+      <tr>
+        <td>${JSL.esc(p.name)}<div class="sub">invited by ${JSL.esc(p.broker)}</div></td>
+        <td>${p.phone
+              ? `<a class="contact" href="https://wa.me/${JSL.esc(String(p.phone).replace(/\D/g, ''))}"
+                    target="_blank" rel="noopener">${JSL.esc(p.phone)}</a>`
+              : '<span class="sub">no number</span>'}
+            <div class="sub">${chan(p.whatsapp_ok, p.whatsapp_detail)}</div></td>
+        <td>${p.email
+              ? `<a class="contact" href="mailto:${JSL.esc(p.email)}">${JSL.esc(p.email)}</a>`
+              : '<span class="sub">no email</span>'}
+            <div class="sub">${chan(p.email_ok, p.email_detail)}</div></td>
+        <td class="num ref">${JSL.esc(p.reference || '—')}</td>
+        <td>${p.attended
+              ? '<span class="chip ok">✓ checked in</span>'
+              : '<span class="chip">· not yet</span>'}</td>
+        <td>${p.interested
+              ? `<span class="chip ok" title="${JSL.esc(p.interest_text || '')}">★ interested</span>`
+              : '<span class="chip">· —</span>'}</td>
+        <td class="r">${p.reference
+              ? `<button class="linkbtn" data-cancel="${JSL.esc(p.reference)}"
+                      data-who="${JSL.esc(p.name)}">Remove</button>`
+              : ''}</td>
+      </tr>`).join('');
+  }
+
+  // Undoing a registration: a test one, or a broker who typed the wrong
+  // client. Two-step on purpose — the row disappears from the door list too,
+  // so a mis-click would turn someone away at the entrance.
+  $('people').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-cancel]');
+    if (!b) return;
+    const ref = b.dataset.cancel;
+    if (!confirm(`Remove ${b.dataset.who} (${ref})?\n\n`
+                 + `Their pass stops working at the door. This cannot be undone here.`)) return;
+    b.disabled = true; b.textContent = 'Removing…';
+    try {
+      await JSL.post('/api/admin/cancel', { code: ref });
+      await showEvent(current);
+    } catch (err) {
+      b.disabled = false; b.textContent = 'Remove';
+      alert(err.message || 'Could not remove that registration.');
+    }
+  });
+
+  $('q').addEventListener('input', () => data && filter && people(data, $('q').value));
+
+  // --- boot --------------------------------------------------------------
+  (async function () {
+    try {
+      await showList();
+    } catch (e) {
+      $('boot').hidden = true;
+      $('login').hidden = false;
+      $('pw').focus();
+      if (!/signed in|password/i.test(e.message)) {
+        $('loginErr').textContent = e.message;
+        $('loginErr').hidden = false;
+      }
+    }
+  })();
+})();
+</script>
+</body>
+</html>

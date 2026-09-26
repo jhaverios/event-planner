@@ -3,6 +3,7 @@ deploy/.env
 deploy/pretix/pretix.cfg
 deploy/caddy/Caddyfile
 deploy/**/*.local.*
+deploy/.admin-credentials
 *.pem
 *.key
 
@@ -12,8 +13,17 @@ backups/
 *.sql
 *.dump
 
+# ...but schema migrations are source, not runtime data
+!deploy/postgres/*.sql
+
 # Editor / OS noise
 .DS_Store
 .idea/
 .vscode/
 *.swp
+deploy/n8n/certs/*.crt
+deploy/n8n/certs/*.pem
+
+# The portal trusts an optional local proxy CA; never commit one
+portal/certs/*.crt
+portal/certs/*.pem
